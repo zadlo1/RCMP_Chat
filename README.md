@@ -183,6 +183,8 @@ Jeśli klient nie otrzyma `MESSAGE_ACK` w ciągu 5 s, ponawia `SEND_MESSAGE` z t
 
 Odpowiada za logowanie, utrzymywanie sesji, wysyłanie i odbieranie wiadomości, reconnect po utracie połączenia, obsługę PING/PONG oraz retransmisję wiadomości. Zaimplementowany jako aplikacja desktopowa z GUI (CustomTkinter).
 
+> **Uwaga:** Wcześniejsze etapy projektu (Etap 1 i Etap 2) wskazywały klienta CLI jako docelową formę MVP. W trakcie realizacji podjąłem decyzję o zastąpieniu CLI prostym interfejsem graficznym opartym na bibliotece CustomTkinter. Funkcjonalność protokołu pozostaje identyczna — zmiana dotyczy wyłącznie warstwy prezentacji.
+
 ### Serwer RCMP
 
 Centralny komponent systemu obsługujący połączenia TCP/TLS, walidację komunikatów, autoryzację użytkowników, routing wiadomości, zarządzanie pokojami, retransmisję i ACK, wykrywanie timeoutów oraz ochronę przed nadużyciami.
@@ -298,6 +300,17 @@ pytest-asyncio==0.23.6
 | Uwierzytelnienie | JWT (HS256, TTL 3600 s) |
 | Hasła | bcrypt |
 
+### Logowanie i diagnostyka
+
+System loguje następujące zdarzenia do tabeli `system_logs` w bazie danych:
+
+- błędy protokołu (niepoprawna koperta, nieznany typ wiadomości),
+- próby logowania (zarówno udane, jak i nieudane),
+- reconnect użytkowników,
+- błędy weryfikacji HMAC,
+- przekroczenia limitu wiadomości (rate limit),
+- błędy wewnętrzne serwera.
+
 ---
 
 ## 6. Instalacja i uruchomienie
@@ -380,6 +393,15 @@ Administrator z rolą `ADMIN` w tokenie JWT może tworzyć (`CREATE_ROOM`), mody
 ### UC8 — Zarządzanie użytkownikami przez administratora
 
 Administrator może blokować (`BLOCK_USER`) i odblokowywać (`UNBLOCK_USER`) konta użytkowników oraz wymuszać rozłączenie (`FORCE_DISCONNECT`). Zablokowany użytkownik nie może ponownie się zalogować.
+
+### Planowane rozszerzenia protokołu
+
+W ramach dalszego rozwoju przewidziane są dwa dodatkowe typy wiadomości:
+
+- `HISTORY_REQUEST` — żądanie pobrania historii wiadomości pokoju (klient → serwer),
+- `HISTORY_RESPONSE` — odpowiedź serwera zawierająca historię wiadomości.
+
+Rozszerzenie umożliwi odtworzenie historii po reconnect, synchronizację stanu klienta oraz pobieranie starszych wiadomości.
 
 ---
 
