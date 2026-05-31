@@ -76,6 +76,7 @@ class RCMPApp(ctk.CTk):
         self.receiver.on("ROOM_EVENT",      self._on_room_event)
         self.receiver.on("MESSAGE_ACK",     self._on_message_ack)
         self.receiver.on("PING",            self._on_ping)
+        self.receiver.on("PONG",            self._on_pong)
         self.receiver.on("ERROR",           self._on_error)
         self.receiver.on("BYE_ACK",         self._on_bye_ack)
 
@@ -136,6 +137,10 @@ class RCMPApp(ctk.CTk):
     async def _on_ping(self, data: dict):
         await self.sender.send("PONG", {"ref_msg_id": data.get("msg_id")})
 
+    async def _on_pong(self, data: dict):
+        # Serwer odpowiedział na nasz PING — połączenie żyje
+        pass
+
     async def _on_error(self, data: dict):
         payload = data.get("payload", {})
         code = payload.get("code")
@@ -152,6 +157,13 @@ class RCMPApp(ctk.CTk):
     # Akcje użytkownika
     # ------------------------------------------------------------------
 
+    # Dostępne pokoje (z serwera) — {room_id: {name, is_private}}
+    _available_rooms = {
+        1: {"name": "general",  "is_private": False},
+        2: {"name": "random",   "is_private": False},
+        3: {"name": "vip-room", "is_private": True},
+    }
+
     def _show_chat(self):
         if self._login_window:
             self._login_window.close()
@@ -163,29 +175,24 @@ class RCMPApp(ctk.CTk):
             on_send=self._send_message,
             on_join_room=self._join_room,
             on_leave_room=self._leave_room,
+            on_browse_rooms=self._browse_rooms,
         )
         self._chat.pack(fill="both", expand=True)
-        self._run_async(self._load_rooms())
 
-    async def _load_rooms(self):
-        default_rooms = [
-            {"id": 1, "name": "general",  "is_private": False},
-            {"id": 2, "name": "random",   "is_private": False},
-            {"id": 3, "name": "vip-room", "is_private": True},
-        ]
-        for room in default_rooms:
-            self.after(0, lambda r=room: self._chat.add_room(
-                r["id"], r["name"], r["is_private"]))
+    def _browse_rooms(self):
+        """Otwiera okno wyboru pokoju do dołączenia."""
+        BrowseRoomsDialog(self, self._available_rooms, on_join=self._join_room)
 
     def _join_room(self, room_id: int):
-        # Znajdź nazwę pokoju
-        names = {1: "general", 2: "random", 3: "vip-room"}
-        room_name = names.get(room_id, str(room_id))
+        room = self._available_rooms.get(room_id, {})
+        room_name = room.get("name", str(room_id))
+        is_private = room.get("is_private", False)
 
         self._current_room_id = room_id
         self._current_room_name = room_name
 
-        # Aktualizuj GUI od razu
+        # Dodaj pokój do listy jeśli jeszcze nie ma
+        self._chat.add_room(room_id, room_name, is_private)
         self._chat.set_active_room(room_id, room_name)
         self._chat.add_system_message(f"Dołączyłeś do #{room_name}")
 
@@ -236,3 +243,44 @@ class RCMPApp(ctk.CTk):
             self._run_async(self.sender.send_bye())
         else:
             self.destroy()
+
+
+class BrowseRoomsDialog(ctk.CTkToplevel):
+    """Okno wyboru pokoju do dołączenia."""
+
+    def __init__(self, parent, available_rooms: dict, on_join):
+        super().__init__(parent)
+        self.on_join = on_join
+        self.available_rooms = available_rooms
+
+        self.title("Dołącz do pokoju")
+        self.geometry("320x380")
+        self.resizable(False, False)
+        self.grab_set()
+
+        ctk.CTkLabel(self, text="Dostępne pokoje",
+                     font=ctk.CTkFont(size=16, weight="bold")).pack(pady=(20, 4))
+        ctk.CTkLabel(self, text="Kliknij pokój aby dołączyć",
+                     font=ctk.CTkFont(size=12), text_color="#888888").pack(pady=(0, 12))
+
+        frame = ctk.CTkScrollableFrame(self)
+        frame.pack(fill="both", expand=True, padx=16, pady=(0, 16))
+
+        for room_id, info in available_rooms.items():
+            icon = "🔒" if info["is_private"] else "#"
+            label = f"  {icon}  {info['name']}"
+            btn = ctk.CTkButton(
+                frame,
+                text=label,
+                anchor="w",
+                height=40,
+                font=ctk.CTkFont(size=13),
+                fg_color="#2B2D42",
+                hover_color="#3B3FA6",
+                command=lambda rid=room_id: self._select(rid),
+            )
+            btn.pack(fill="x", pady=3)
+
+    def _select(self, room_id: int):
+        self.on_join(room_id)
+        self.destroy()

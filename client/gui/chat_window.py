@@ -5,13 +5,14 @@ from client.gui.widgets import MessageBubble, SystemMessage, RoomListItem, UserL
 
 class ChatWindow(ctk.CTkFrame):
 
-    def __init__(self, parent, username: str, on_send, on_join_room, on_leave_room, **kwargs):
+    def __init__(self, parent, username: str, on_send, on_join_room, on_leave_room, on_browse_rooms=None, **kwargs):
         super().__init__(parent, corner_radius=0, **kwargs)
 
         self.username = username
         self.on_send = on_send
         self.on_join_room = on_join_room
         self.on_leave_room = on_leave_room
+        self.on_browse_rooms = on_browse_rooms
 
         self._current_room_id = None
         self._current_room_name = None
@@ -48,9 +49,18 @@ class ChatWindow(ctk.CTkFrame):
                      font=ctk.CTkFont(size=15, weight="bold")).pack(
             side="left", padx=14, pady=14)
 
-        ctk.CTkLabel(self._sidebar, text="POKOJE",
-                     font=ctk.CTkFont(size=10), text_color="#888888").pack(
-            anchor="w", padx=14, pady=(10, 2))
+        rooms_header = ctk.CTkFrame(self._sidebar, fg_color="transparent")
+        rooms_header.pack(fill="x", padx=14, pady=(10, 2))
+
+        ctk.CTkLabel(rooms_header, text="POKOJE",
+                     font=ctk.CTkFont(size=10), text_color="#888888").pack(side="left")
+
+        ctk.CTkButton(
+            rooms_header, text="+", width=24, height=20,
+            font=ctk.CTkFont(size=14, weight="bold"),
+            fg_color="#3B3FA6", hover_color="#5558CC",
+            command=lambda: self.on_browse_rooms() if self.on_browse_rooms else None,
+        ).pack(side="right")
 
         self._rooms_frame = ctk.CTkScrollableFrame(
             self._sidebar, height=180, fg_color="transparent")
