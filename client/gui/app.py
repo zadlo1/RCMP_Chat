@@ -196,9 +196,9 @@ class RCMPApp(ctk.CTk):
         self._run_async(self.sender.send_leave_room(room_id))
         self._current_room_id = None
         self._current_room_name = None
+        self._chat.room_left(room_id)
 
     def _send_message(self, room_id: int, body: str):
-        # Pokaż własną wiadomość lokalnie od razu
         import time
         ts = int(time.time() * 1000)
         self._chat.add_message(self._username, body, ts, own=True)

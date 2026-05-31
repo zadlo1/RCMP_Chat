@@ -4,7 +4,6 @@ from client.gui.widgets import MessageBubble, SystemMessage, RoomListItem, UserL
 
 
 class ChatWindow(ctk.CTkFrame):
-    """Główny widok czatu — sidebar + obszar wiadomości."""
 
     def __init__(self, parent, username: str, on_send, on_join_room, on_leave_room, **kwargs):
         super().__init__(parent, corner_radius=0, **kwargs)
@@ -18,6 +17,9 @@ class ChatWindow(ctk.CTkFrame):
         self._current_room_name = None
         self._room_items: dict[int, RoomListItem] = {}
 
+        # Historia wiadomości per pokój: {room_id: [(username, body, ts, own)]}
+        self._room_histories: dict[int, list] = {}
+
         self._build_ui()
 
     # ------------------------------------------------------------------
@@ -27,7 +29,6 @@ class ChatWindow(ctk.CTkFrame):
     def _build_ui(self):
         self.pack(fill="both", expand=True)
 
-        # Główny podział: sidebar + chat
         self._sidebar = ctk.CTkFrame(self, width=220, corner_radius=0)
         self._sidebar.pack(side="left", fill="y")
         self._sidebar.pack_propagate(False)
@@ -39,7 +40,6 @@ class ChatWindow(ctk.CTkFrame):
         self._build_chat()
 
     def _build_sidebar(self):
-        # Nagłówek
         header = ctk.CTkFrame(self._sidebar, corner_radius=0, height=56)
         header.pack(fill="x")
         header.pack_propagate(False)
@@ -48,7 +48,6 @@ class ChatWindow(ctk.CTkFrame):
                      font=ctk.CTkFont(size=15, weight="bold")).pack(
             side="left", padx=14, pady=14)
 
-        # Pokoje
         ctk.CTkLabel(self._sidebar, text="POKOJE",
                      font=ctk.CTkFont(size=10), text_color="#888888").pack(
             anchor="w", padx=14, pady=(10, 2))
@@ -57,7 +56,6 @@ class ChatWindow(ctk.CTkFrame):
             self._sidebar, height=180, fg_color="transparent")
         self._rooms_frame.pack(fill="x", padx=4)
 
-        # Użytkownicy
         ctk.CTkLabel(self._sidebar, text="ONLINE",
                      font=ctk.CTkFont(size=10), text_color="#888888").pack(
             anchor="w", padx=14, pady=(10, 2))
@@ -66,7 +64,6 @@ class ChatWindow(ctk.CTkFrame):
             self._sidebar, fg_color="transparent")
         self._users_frame.pack(fill="both", expand=True, padx=4)
 
-        # Stopka z nazwą użytkownika
         footer = ctk.CTkFrame(self._sidebar, corner_radius=0, height=48)
         footer.pack(fill="x", side="bottom")
         footer.pack_propagate(False)
@@ -76,14 +73,13 @@ class ChatWindow(ctk.CTkFrame):
             side="left", padx=14)
 
     def _build_chat(self):
-        # Nagłówek czatu
-        self._chat_header = ctk.CTkFrame(
-            self._chat_area, height=48, corner_radius=0)
+        # Nagłówek
+        self._chat_header = ctk.CTkFrame(self._chat_area, height=48, corner_radius=0)
         self._chat_header.pack(fill="x")
         self._chat_header.pack_propagate(False)
 
         self._room_label = ctk.CTkLabel(
-            self._chat_header, text="Wybierz pokój",
+            self._chat_header, text="Brak pokoju",
             font=ctk.CTkFont(size=14, weight="bold"))
         self._room_label.pack(side="left", padx=14)
 
@@ -95,10 +91,37 @@ class ChatWindow(ctk.CTkFrame):
         self._leave_btn.pack(side="right", padx=10)
         self._leave_btn.pack_forget()
 
-        # Obszar wiadomości
+        # Obszar wiadomości — stack: placeholder + scrollable
+        self._content_frame = ctk.CTkFrame(self._chat_area, fg_color="transparent")
+        self._content_frame.pack(fill="both", expand=True)
+
+        # Placeholder "brak pokoju"
+        self._placeholder = ctk.CTkFrame(self._content_frame, fg_color="transparent")
+        self._placeholder.place(relx=0.5, rely=0.5, anchor="center")
+
+        ctk.CTkLabel(
+            self._placeholder,
+            text="💬",
+            font=ctk.CTkFont(size=52),
+        ).pack()
+
+        ctk.CTkLabel(
+            self._placeholder,
+            text="Nie jesteś w żadnym pokoju",
+            font=ctk.CTkFont(size=20, weight="bold"),
+        ).pack(pady=(8, 4))
+
+        ctk.CTkLabel(
+            self._placeholder,
+            text="Wybierz pokój z listy po lewej stronie,\naby rozpocząć rozmowę.",
+            font=ctk.CTkFont(size=13),
+            text_color="#888888",
+            justify="center",
+        ).pack()
+
+        # Scrollable frame na wiadomości (początkowo ukryty)
         self._messages_frame = ctk.CTkScrollableFrame(
-            self._chat_area, fg_color="transparent")
-        self._messages_frame.pack(fill="both", expand=True, padx=4, pady=4)
+            self._content_frame, fg_color="transparent")
 
         # Pole wpisywania
         input_frame = ctk.CTkFrame(self._chat_area, height=54, corner_radius=0)
@@ -120,7 +143,6 @@ class ChatWindow(ctk.CTkFrame):
             command=self._send)
         send_btn.pack(side="right", padx=(0, 10), pady=9)
 
-        # Pasek statusu
         self._status_bar = StatusBar(self._chat_area)
         self._status_bar.pack(fill="x", side="bottom")
 
@@ -129,9 +151,9 @@ class ChatWindow(ctk.CTkFrame):
     # ------------------------------------------------------------------
 
     def add_room(self, room_id: int, room_name: str, is_private: bool = False):
-        """Dodaje pokój do listy w sidebarze."""
         if room_id in self._room_items:
             return
+        self._room_histories[room_id] = []
         item = RoomListItem(
             self._rooms_frame,
             room_name=room_name,
@@ -145,7 +167,6 @@ class ChatWindow(ctk.CTkFrame):
     def _join_room(self, room_id: int):
         if room_id == self._current_room_id:
             return
-        # Wizualnie zaznacz aktywny pokój
         for rid, item in self._room_items.items():
             item.set_active(rid == room_id)
         self.on_join_room(room_id)
@@ -159,16 +180,94 @@ class ChatWindow(ctk.CTkFrame):
         self._current_room_name = room_name
         self._room_label.configure(text=f"# {room_name}")
         self._leave_btn.pack(side="right", padx=10)
+
+        # Ukryj placeholder, pokaż wiadomości
+        self._placeholder.place_forget()
+        self._messages_frame.pack(fill="both", expand=True, padx=4, pady=4)
+
         for rid, item in self._room_items.items():
             item.set_active(rid == room_id)
+
+        # Załaduj historię tego pokoju
+        self._reload_messages()
+
+    def room_left(self, room_id: int):
+        """Wywołaj gdy użytkownik opuści pokój."""
+        self._current_room_id = None
+        self._current_room_name = None
+        self._room_label.configure(text="Brak pokoju")
+        self._leave_btn.pack_forget()
+
+        # Pokaż placeholder, ukryj wiadomości
+        self._messages_frame.pack_forget()
+        self._placeholder.place(relx=0.5, rely=0.5, anchor="center")
+
+        for rid, item in self._room_items.items():
+            item.set_active(False)
 
     # ------------------------------------------------------------------
     # Wiadomości
     # ------------------------------------------------------------------
 
+    def _reload_messages(self):
+        """Czyści obszar czatu i ładuje historię aktualnego pokoju."""
+        for widget in self._messages_frame.winfo_children():
+            widget.destroy()
+
+        if self._current_room_id not in self._room_histories:
+            return
+
+        for entry in self._room_histories[self._current_room_id]:
+            kind = entry["kind"]
+            if kind == "message":
+                self._render_bubble(
+                    entry["username"], entry["body"],
+                    entry["ts"], entry["own"]
+                )
+            elif kind == "system":
+                self._render_system(entry["text"])
+            elif kind == "failed":
+                self._render_failed(entry["body"])
+
+        self._scroll_to_bottom()
+
     def add_message(self, username: str, body: str, ts: int = None, own: bool = False):
-        """Dodaje bąbelek wiadomości do obszaru czatu."""
         ts = ts or int(time.time() * 1000)
+
+        # Zapisz do historii pokoju
+        if self._current_room_id is not None:
+            self._room_histories.setdefault(self._current_room_id, []).append({
+                "kind": "message",
+                "username": username,
+                "body": body,
+                "ts": ts,
+                "own": own,
+            })
+            self._render_bubble(username, body, ts, own)
+            self._scroll_to_bottom()
+
+    def add_system_message(self, text: str, room_id: int = None):
+        target = room_id or self._current_room_id
+        if target is not None:
+            self._room_histories.setdefault(target, []).append({
+                "kind": "system",
+                "text": text,
+            })
+        if target == self._current_room_id:
+            self._render_system(text)
+            self._scroll_to_bottom()
+
+    def add_failed_message(self, body: str):
+        """Dodaje wiadomość która nie została wysłana (brak pokoju)."""
+        if self._current_room_id is not None:
+            self._room_histories.setdefault(self._current_room_id, []).append({
+                "kind": "failed",
+                "body": body,
+            })
+            self._render_failed(body)
+            self._scroll_to_bottom()
+
+    def _render_bubble(self, username: str, body: str, ts: int, own: bool):
         bubble = MessageBubble(
             self._messages_frame,
             username=username,
@@ -177,23 +276,45 @@ class ChatWindow(ctk.CTkFrame):
             own=own,
         )
         bubble.pack(fill="x", pady=1)
-        self._scroll_to_bottom()
 
-    def add_system_message(self, text: str):
-        """Dodaje wiadomość systemową (np. ktoś dołączył)."""
+    def _render_system(self, text: str):
         msg = SystemMessage(self._messages_frame, text=text)
         msg.pack(pady=4)
-        self._scroll_to_bottom()
+
+    def _render_failed(self, body: str):
+        """Wiadomość niewyslana — szare tło z ikoną błędu."""
+        frame = ctk.CTkFrame(
+            self._messages_frame,
+            fg_color="#4A2020",
+            corner_radius=10,
+        )
+        frame.pack(anchor="e", padx=(40, 4), pady=2, fill="x")
+
+        ctk.CTkLabel(
+            frame,
+            text="⚠  Nie wysłano — opuściłeś pokój",
+            font=ctk.CTkFont(size=10),
+            text_color="#FF8888",
+        ).pack(anchor="e", padx=10, pady=(6, 0))
+
+        ctk.CTkLabel(
+            frame,
+            text=body,
+            font=ctk.CTkFont(size=13),
+            text_color="#888888",
+            wraplength=380,
+            justify="left",
+        ).pack(anchor="w", padx=10, pady=(2, 8))
 
     def _scroll_to_bottom(self):
-        self._messages_frame.after(50, lambda: self._messages_frame._parent_canvas.yview_moveto(1.0))
+        self._messages_frame.after(
+            50, lambda: self._messages_frame._parent_canvas.yview_moveto(1.0))
 
     # ------------------------------------------------------------------
     # Użytkownicy
     # ------------------------------------------------------------------
 
     def set_users(self, users: list[dict]):
-        """Odświeża listę użytkowników online."""
         for widget in self._users_frame.winfo_children():
             widget.destroy()
         for user in users:
@@ -210,10 +331,23 @@ class ChatWindow(ctk.CTkFrame):
 
     def _send(self):
         body = self._input.get().strip()
-        if not body or not self._current_room_id:
+        if not body:
             return
+
+        if not self._current_room_id:
+            # Pokaż placeholder z animacją — nie ma pokoju
+            self._flash_no_room()
+            return
+
         self._input.delete(0, "end")
         self.on_send(self._current_room_id, body)
+
+    def _flash_no_room(self):
+        """Podświetla placeholder żeby zwrócić uwagę."""
+        original = self._room_label.cget("text")
+        self._room_label.configure(text="⚠  Wybierz pokój!", text_color="#FF6666")
+        self.after(2000, lambda: self._room_label.configure(
+            text=original, text_color="white"))
 
     # ------------------------------------------------------------------
     # Status
