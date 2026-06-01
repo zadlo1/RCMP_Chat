@@ -63,11 +63,11 @@ async def seed():
         )
         print(f"  + #{name} ({'prywatny' if is_private else 'publiczny'})")
 
-    # ACL dla vip-room — tylko alice i admin
+    # ACL dla vip-room — tylko admin
     print("[SEED] Ustawianie ACL dla vip-room...")
     vip_room = await pool.fetchrow("SELECT id FROM rooms WHERE name = 'vip-room'")
     if vip_room:
-        for username in ("alice", "admin"):
+        for username in ("admin",):
             user = await pool.fetchrow("SELECT id FROM users WHERE username = $1", username)
             if user:
                 await pool.execute(
