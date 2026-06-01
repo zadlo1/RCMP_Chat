@@ -154,6 +154,12 @@ class RCMPApp(ctk.CTk):
             r["id"]: {"name": r["name"], "is_private": r["is_private"]}
             for r in rooms
         }
+        # Dodaj do sidebara tylko pokoje do których user ma dostęp
+        for r in rooms:
+            if r.get("has_access", True):
+                self.after(0, lambda room=r: self._chat.add_room(
+                    room["id"], room["name"], room["is_private"]
+                ))
 
     async def _on_room_invite(self, data: dict):
         payload = data.get("payload", {})
@@ -208,36 +214,11 @@ class RCMPApp(ctk.CTk):
             on_send=self._send_message,
             on_join_room=self._join_room,
             on_leave_room=self._leave_room,
-            on_browse_rooms=self._browse_rooms,
         )
         self._chat.pack(fill="both", expand=True)
 
-    def _browse_rooms(self):
-        """Otwiera okno wyboru pokoju do dołączenia."""
-        is_admin = (self.sender.token is not None and
-                    self._get_role_from_token() == "admin")
-        BrowseRoomsDialog(
-            self, self._available_rooms,
-            on_join=self._join_room,
-            is_admin=is_admin,
-            on_invite=self._show_invite_dialog,
-        )
-
-    def _get_role_from_token(self) -> str:
-        try:
-            import jwt
-            from server.config import Config
-            payload = jwt.decode(self.sender.token, Config.JWT_SECRET, algorithms=["HS256"])
-            return payload.get("role", "user")
-        except Exception:
-            return "user"
-
-    def _show_invite_dialog(self, room_id: int, room_name: str):
-        """Okno wyboru użytkownika do zaproszenia (tylko admin)."""
-        SendInviteDialog(self, room_id, room_name, on_send=self._send_invite)
-
     def _send_invite(self, room_id: int, room_name: str, username: str):
-        """Wysyła SEND_MESSAGE z flagą invite do serwera."""
+        """Wysyła zaproszenie do prywatnego pokoju."""
         self._run_async(self.sender.send(
             "SEND_MESSAGE", {
                 "target_type": "invite",
@@ -253,13 +234,10 @@ class RCMPApp(ctk.CTk):
     def _join_room(self, room_id: int):
         room = self._available_rooms.get(room_id, {})
         room_name = room.get("name", str(room_id))
-        is_private = room.get("is_private", False)
 
         self._current_room_id = room_id
         self._current_room_name = room_name
 
-        # Dodaj pokój do listy jeśli jeszcze nie ma
-        self._chat.add_room(room_id, room_name, is_private)
         self._chat.set_active_room(room_id, room_name)
         self._chat.add_system_message(f"Dołączyłeś do #{room_name}")
 
