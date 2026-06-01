@@ -83,7 +83,7 @@ class RCMPConnection:
     def is_connected(self) -> bool:
         if not self.connected:
             return False
-        if self.writer and self.writer.is_closing():
+        if self.writer is None:
             self.connected = False
             return False
         return True

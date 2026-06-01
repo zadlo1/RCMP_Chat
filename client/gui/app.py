@@ -32,6 +32,7 @@ class RCMPApp(ctk.CTk):
         self._current_room_name: str = None
         self._jwt_exp: int = None
         self._available_rooms: dict = {}
+        self._bg_tasks: list = []  # referencje do tasków żeby GC ich nie zebrał
 
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._run_loop, daemon=True)
@@ -83,9 +84,11 @@ class RCMPApp(ctk.CTk):
         self.receiver.on("ERROR",           self._on_error)
         self.receiver.on("BYE_ACK",         self._on_bye_ack)
 
-        asyncio.create_task(self.receiver.start())
-        asyncio.create_task(self._ping_loop())
-        asyncio.create_task(self._retransmit_loop())
+        self._bg_tasks = [
+            asyncio.create_task(self.receiver.start()),
+            asyncio.create_task(self._ping_loop()),
+            asyncio.create_task(self._retransmit_loop()),
+        ]
 
         await self.sender.send_login(username, password)
         self._username = username

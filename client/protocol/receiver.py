@@ -39,10 +39,11 @@ class RCMPReceiver:
             try:
                 chunk = await asyncio.wait_for(
                     self.conn.reader.read(4096),
-                    timeout=Config.TIMEOUT_PONG + 5
+                    timeout=Config.PING_INTERVAL + Config.TIMEOUT_PONG + 5
                 )
             except asyncio.TimeoutError:
-                # Brak danych — możliwe zerwanie połączenia
+                # Brak danych przez dłużej niż PING_INTERVAL + PONG timeout
+                # — połączenie prawdopodobnie zerwane
                 self.conn.connected = False
                 break
             except (ConnectionResetError, OSError):
