@@ -23,11 +23,15 @@ class MessageType:
     ROOM_INVITE_ACCEPT = "ROOM_INVITE_ACCEPT"
     ROOM_INVITE_DECLINE = "ROOM_INVITE_DECLINE"
 
+    # Lista pokojów
+    ROOMS_LIST = "ROOMS_LIST"
+
     ALL = {
         "LOGIN", "JOIN_ROOM", "LEAVE_ROOM", "SEND_MESSAGE", "MESSAGE_ACK",
         "STATUS", "PING", "BYE", "LOGIN_OK", "LOGIN_ERR", "ROOM_EVENT",
         "DELIVER_MESSAGE", "PONG", "ERROR", "BYE_ACK",
         "ROOM_INVITE", "ROOM_INVITE_ACCEPT", "ROOM_INVITE_DECLINE",
+        "ROOMS_LIST",
     }
 
     # Typy które nie wymagają tokenu sesji

@@ -202,6 +202,8 @@ class RCMPServer:
             )
             if session.state == "ACTIVE":
                 self.router.register(session.user_id, writer)
+                # Wyślij listę dostępnych pokojów
+                asyncio.create_task(self._send_rooms_list(session))
 
         elif msg_type == MessageType.JOIN_ROOM:
             await handle_join_room(data, session, self.router, self.room_manager)
@@ -245,6 +247,43 @@ class RCMPServer:
                 session.writer, ErrorCode.UNKNOWN_TYPE,
                 ErrorCode.get_message(ErrorCode.UNKNOWN_TYPE)
             )
+
+    # ------------------------------------------------------------------
+    # Lista pokojów
+    # ------------------------------------------------------------------
+
+    async def _send_rooms_list(self, session):
+        """Wysyła listę dostępnych pokojów po zalogowaniu."""
+        rows = await self.db_pool.fetch(
+            "SELECT id, name, is_private FROM rooms ORDER BY name"
+        )
+        rooms = []
+        for row in rows:
+            # Dla pokojów prywatnych sprawdź ACL
+            if row["is_private"]:
+                acl = await self.db_pool.fetchrow(
+                    "SELECT 1 FROM room_acl WHERE room_id = $1 AND user_id = $2",
+                    row["id"], session.user_id
+                )
+                has_access = acl is not None or session.role == "admin"
+            else:
+                has_access = True
+
+            rooms.append({
+                "id": row["id"],
+                "name": row["name"],
+                "is_private": row["is_private"],
+                "has_access": has_access,
+            })
+
+        frame = {
+            "type": "ROOMS_LIST",
+            "msg_id": str(uuid.uuid4()),
+            "ts": int(time.time() * 1000),
+            "token": session.token,
+            "payload": {"rooms": rooms}
+        }
+        await self.router._write(session.writer, frame)
 
     # ------------------------------------------------------------------
     # Timeout sesji

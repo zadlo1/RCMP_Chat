@@ -31,6 +31,7 @@ class RCMPApp(ctk.CTk):
         self._current_room_id: int = None
         self._current_room_name: str = None
         self._jwt_exp: int = None
+        self._available_rooms: dict = {}
 
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._run_loop, daemon=True)
@@ -78,6 +79,7 @@ class RCMPApp(ctk.CTk):
         self.receiver.on("PING",            self._on_ping)
         self.receiver.on("PONG",            self._on_pong)
         self.receiver.on("ROOM_INVITE",     self._on_room_invite)
+        self.receiver.on("ROOMS_LIST",      self._on_rooms_list)
         self.receiver.on("ERROR",           self._on_error)
         self.receiver.on("BYE_ACK",         self._on_bye_ack)
 
@@ -142,6 +144,14 @@ class RCMPApp(ctk.CTk):
         # Serwer odpowiedział na nasz PING — połączenie żyje
         pass
 
+    async def _on_rooms_list(self, data: dict):
+        payload = data.get("payload", {})
+        rooms = payload.get("rooms", [])
+        self._available_rooms = {
+            r["id"]: {"name": r["name"], "is_private": r["is_private"]}
+            for r in rooms
+        }
+
     async def _on_room_invite(self, data: dict):
         payload = data.get("payload", {})
         room_id = payload.get("room_id")
@@ -183,13 +193,6 @@ class RCMPApp(ctk.CTk):
     # ------------------------------------------------------------------
     # Akcje użytkownika
     # ------------------------------------------------------------------
-
-    # Dostępne pokoje (z serwera) — {room_id: {name, is_private}}
-    _available_rooms = {
-        1: {"name": "general",  "is_private": False},
-        2: {"name": "random",   "is_private": False},
-        3: {"name": "vip-room", "is_private": True},
-    }
 
     def _show_chat(self):
         if self._login_window:
