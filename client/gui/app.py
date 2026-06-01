@@ -77,6 +77,7 @@ class RCMPApp(ctk.CTk):
         self.receiver.on("MESSAGE_ACK",     self._on_message_ack)
         self.receiver.on("PING",            self._on_ping)
         self.receiver.on("PONG",            self._on_pong)
+        self.receiver.on("ROOM_INVITE",     self._on_room_invite)
         self.receiver.on("ERROR",           self._on_error)
         self.receiver.on("BYE_ACK",         self._on_bye_ack)
 
@@ -141,6 +142,32 @@ class RCMPApp(ctk.CTk):
         # Serwer odpowiedział na nasz PING — połączenie żyje
         pass
 
+    async def _on_room_invite(self, data: dict):
+        payload = data.get("payload", {})
+        room_id = payload.get("room_id")
+        room_name = payload.get("room_name", "?")
+        invited_by = payload.get("invited_by", "?")
+
+        def accept():
+            self._run_async(self.sender.send(
+                "ROOM_INVITE_ACCEPT", {"room_id": room_id}
+            ))
+            # Dodaj pokój do listy i dołącz
+            self._available_rooms[room_id] = {
+                "name": room_name, "is_private": True
+            }
+            self._join_room(room_id)
+
+        def decline():
+            self._run_async(self.sender.send(
+                "ROOM_INVITE_DECLINE", {"room_id": room_id}
+            ))
+
+        self.after(0, lambda: InviteDialog(
+            self, room_name, invited_by,
+            on_accept=accept, on_decline=decline
+        ))
+
     async def _on_error(self, data: dict):
         payload = data.get("payload", {})
         code = payload.get("code")
@@ -181,7 +208,41 @@ class RCMPApp(ctk.CTk):
 
     def _browse_rooms(self):
         """Otwiera okno wyboru pokoju do dołączenia."""
-        BrowseRoomsDialog(self, self._available_rooms, on_join=self._join_room)
+        is_admin = (self.sender.token is not None and
+                    self._get_role_from_token() == "admin")
+        BrowseRoomsDialog(
+            self, self._available_rooms,
+            on_join=self._join_room,
+            is_admin=is_admin,
+            on_invite=self._show_invite_dialog,
+        )
+
+    def _get_role_from_token(self) -> str:
+        try:
+            import jwt
+            from server.config import Config
+            payload = jwt.decode(self.sender.token, Config.JWT_SECRET, algorithms=["HS256"])
+            return payload.get("role", "user")
+        except Exception:
+            return "user"
+
+    def _show_invite_dialog(self, room_id: int, room_name: str):
+        """Okno wyboru użytkownika do zaproszenia (tylko admin)."""
+        SendInviteDialog(self, room_id, room_name, on_send=self._send_invite)
+
+    def _send_invite(self, room_id: int, room_name: str, username: str):
+        """Wysyła SEND_MESSAGE z flagą invite do serwera."""
+        self._run_async(self.sender.send(
+            "SEND_MESSAGE", {
+                "target_type": "invite",
+                "target_id": room_id,
+                "room_name": room_name,
+                "invite_to": username,
+                "seq_id": 0,
+                "body": f"Zaproszenie do #{room_name}",
+                "hmac": "",
+            }
+        ))
 
     def _join_room(self, room_id: int):
         room = self._available_rooms.get(room_id, {})
@@ -246,15 +307,18 @@ class RCMPApp(ctk.CTk):
 
 
 class BrowseRoomsDialog(ctk.CTkToplevel):
-    """Okno wyboru pokoju do dołączenia."""
+    """Okno wyboru pokoju do dołączenia lub wysłania zaproszenia."""
 
-    def __init__(self, parent, available_rooms: dict, on_join):
+    def __init__(self, parent, available_rooms: dict, on_join,
+                 is_admin: bool = False, on_invite=None):
         super().__init__(parent)
         self.on_join = on_join
+        self.on_invite = on_invite
         self.available_rooms = available_rooms
+        self.is_admin = is_admin
 
         self.title("Dołącz do pokoju")
-        self.geometry("320x380")
+        self.geometry("360x420")
         self.resizable(False, False)
         self.grab_set()
 
@@ -268,19 +332,135 @@ class BrowseRoomsDialog(ctk.CTkToplevel):
 
         for room_id, info in available_rooms.items():
             icon = "🔒" if info["is_private"] else "#"
-            label = f"  {icon}  {info['name']}"
-            btn = ctk.CTkButton(
-                frame,
-                text=label,
+            row = ctk.CTkFrame(frame, fg_color="transparent")
+            row.pack(fill="x", pady=3)
+
+            ctk.CTkButton(
+                row,
+                text=f"  {icon}  {info['name']}",
                 anchor="w",
                 height=40,
                 font=ctk.CTkFont(size=13),
                 fg_color="#2B2D42",
                 hover_color="#3B3FA6",
                 command=lambda rid=room_id: self._select(rid),
-            )
-            btn.pack(fill="x", pady=3)
+            ).pack(side="left", fill="x", expand=True)
+
+            # Przycisk zaproszenia — tylko dla admina i pokojów prywatnych
+            if is_admin and info["is_private"] and on_invite:
+                ctk.CTkButton(
+                    row,
+                    text="✉",
+                    width=40, height=40,
+                    font=ctk.CTkFont(size=16),
+                    fg_color="#3B3FA6",
+                    hover_color="#5558CC",
+                    command=lambda rid=room_id, rn=info["name"]: self._invite(rid, rn),
+                ).pack(side="right", padx=(4, 0))
 
     def _select(self, room_id: int):
         self.on_join(room_id)
+        self.destroy()
+
+    def _invite(self, room_id: int, room_name: str):
+        if self.on_invite:
+            self.on_invite(room_id, room_name)
+        self.destroy()
+
+
+class InviteDialog(ctk.CTkToplevel):
+    """Okno zaproszenia do prywatnego pokoju."""
+
+    def __init__(self, parent, room_name: str, invited_by: str,
+                 on_accept, on_decline):
+        super().__init__(parent)
+        self.on_accept = on_accept
+        self.on_decline = on_decline
+
+        self.title("Zaproszenie do pokoju")
+        self.geometry("360x220")
+        self.resizable(False, False)
+        self.grab_set()
+
+        ctk.CTkLabel(self, text="🔒  Zaproszenie do pokoju",
+                     font=ctk.CTkFont(size=16, weight="bold")).pack(pady=(24, 4))
+
+        ctk.CTkLabel(
+            self,
+            text=f"{invited_by} zaprasza Cię do pokoju\n#{room_name}",
+            font=ctk.CTkFont(size=13),
+            text_color="#CCCCCC",
+            justify="center",
+        ).pack(pady=(4, 20))
+
+        btn_frame = ctk.CTkFrame(self, fg_color="transparent")
+        btn_frame.pack()
+
+        ctk.CTkButton(
+            btn_frame, text="Akceptuj", width=130, height=38,
+            fg_color="#1D9E75", hover_color="#158A63",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            command=self._accept,
+        ).pack(side="left", padx=8)
+
+        ctk.CTkButton(
+            btn_frame, text="Odrzuć", width=130, height=38,
+            fg_color="#555555", hover_color="#CC4444",
+            font=ctk.CTkFont(size=13),
+            command=self._decline,
+        ).pack(side="left", padx=8)
+
+    def _accept(self):
+        self.on_accept()
+        self.destroy()
+
+    def _decline(self):
+        self.on_decline()
+        self.destroy()
+
+
+class SendInviteDialog(ctk.CTkToplevel):
+    """Okno wysyłania zaproszenia do prywatnego pokoju (dla admina)."""
+
+    def __init__(self, parent, room_id: int, room_name: str, on_send):
+        super().__init__(parent)
+        self.room_id = room_id
+        self.room_name = room_name
+        self.on_send = on_send
+
+        self.title("Wyślij zaproszenie")
+        self.geometry("340x220")
+        self.resizable(False, False)
+        self.grab_set()
+
+        ctk.CTkLabel(self, text=f"Zaproś do #{room_name}",
+                     font=ctk.CTkFont(size=16, weight="bold")).pack(pady=(24, 4))
+
+        ctk.CTkLabel(self, text="Podaj nazwę użytkownika:",
+                     font=ctk.CTkFont(size=12),
+                     text_color="#AAAAAA").pack(pady=(8, 4))
+
+        self._entry = ctk.CTkEntry(self, placeholder_text="np. bob",
+                                   height=38, font=ctk.CTkFont(size=13))
+        self._entry.pack(fill="x", padx=32, pady=(0, 8))
+
+        self._error = ctk.CTkLabel(self, text="", text_color="#CC4444",
+                                   font=ctk.CTkFont(size=11))
+        self._error.pack()
+
+        ctk.CTkButton(
+            self, text="Wyślij zaproszenie", height=38,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            command=self._send,
+        ).pack(fill="x", padx=32, pady=(8, 0))
+
+        self._entry.bind("<Return>", lambda e: self._send())
+        self.after(100, self._entry.focus)
+
+    def _send(self):
+        username = self._entry.get().strip()
+        if not username:
+            self._error.configure(text="Podaj nazwę użytkownika.")
+            return
+        self.on_send(self.room_id, self.room_name, username)
         self.destroy()

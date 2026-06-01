@@ -16,6 +16,7 @@ from server.handlers.keepalive import handle_ping, handle_pong
 from server.handlers.bye import handle_bye
 from server.handlers.messaging import handle_send_message, handle_message_ack
 from server.handlers.rooms import handle_join_room, handle_leave_room
+from server.handlers.invite import handle_room_invite_accept, handle_room_invite_decline, send_invite
 from shared.message_types import MessageType
 from shared.schemas import validate_envelope
 from shared.error_codes import ErrorCode
@@ -222,6 +223,12 @@ class RCMPServer:
 
         elif msg_type == MessageType.PONG:
             await handle_pong(data, session)
+
+        elif msg_type == MessageType.ROOM_INVITE_ACCEPT:
+            await handle_room_invite_accept(data, session, self.router, self.db_pool)
+
+        elif msg_type == MessageType.ROOM_INVITE_DECLINE:
+            await handle_room_invite_decline(data, session, self.router)
 
         elif msg_type == MessageType.BYE:
             await handle_bye(

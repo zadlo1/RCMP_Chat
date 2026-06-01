@@ -507,3 +507,82 @@ Klient wysyła `username + password + nonce`. Hasło nigdy nie jest eksponowane 
 pytest tests/ -v
 pytest tests/ -v --asyncio-mode=auto
 ```
+---
+
+## 11. Zaproszenia do pokojów prywatnych
+
+### Mechanizm
+
+System zaproszeń pozwala administratorowi zapraszać użytkowników do pokojów prywatnych bez ręcznej edycji bazy danych. Przepływ:
+
+1. Admin otwiera listę pokojów (przycisk **+** w sidebarze).
+2. Przy pokojach prywatnych widzi przycisk **✉** (tylko dla roli `admin`).
+3. Admin wpisuje nazwę użytkownika i wysyła zaproszenie.
+4. Użytkownik otrzymuje okno dialogowe z możliwością akceptacji lub odrzucenia.
+5. Po akceptacji użytkownik zostaje dodany do `room_acl` i automatycznie dołącza do pokoju.
+
+### Nowe typy wiadomości
+
+| Typ | Kierunek | Opis |
+|---|---|---|
+| `ROOM_INVITE` | S → C | zaproszenie do prywatnego pokoju |
+| `ROOM_INVITE_ACCEPT` | C → S | akceptacja zaproszenia |
+| `ROOM_INVITE_DECLINE` | C → S | odrzucenie zaproszenia |
+
+### Ograniczenia
+
+- Zaproszenia może wysyłać tylko użytkownik z rolą `admin`.
+- Zapraszany użytkownik musi być online (aktywna sesja).
+- Po akceptacji wpis trafia do tabeli `room_acl` i jest trwały.
+
+---
+
+## 12. Szczegóły implementacji GUI
+
+### Struktura okien
+
+- **LoginWindow** — modal z polami username/hasło, blokuje główne okno do czasu zalogowania.
+- **ChatWindow** — główny widok podzielony na sidebar (pokoje, użytkownicy) i obszar czatu.
+- **BrowseRoomsDialog** — lista dostępnych pokojów z możliwością dołączenia; dla admina przyciski zaproszeń przy pokojach prywatnych.
+- **InviteDialog** — powiadomienie o zaproszeniu z przyciskami Akceptuj/Odrzuć.
+- **SendInviteDialog** — formularz wysyłania zaproszenia (wpisanie nazwy użytkownika).
+
+### Historia wiadomości per pokój
+
+Każdy pokój ma własną historię wiadomości przechowywaną w pamięci klienta. Przełączanie między pokojami odświeża widok czatu i pokazuje tylko wiadomości z aktualnego pokoju. Historia zawiera trzy rodzaje wpisów: wiadomości (bąbelki), wiadomości systemowe (zdarzenia pokoju) i wiadomości niewyslane (oznaczone czerwonym tłem).
+
+### Wiadomości niewyslane
+
+Jeśli użytkownik opuścił pokój po wysłaniu wiadomości, wiadomość wyświetlana jest z ciemnoczerwonym tłem i informacją `⚠ Nie wysłano — opuściłeś pokój`.
+
+### Placeholder braku pokoju
+
+Gdy użytkownik nie należy do żadnego pokoju, obszar czatu wyświetla duży napis z ikoną 💬 i instrukcją wyboru pokoju. Próba wysłania wiadomości bez aktywnego pokoju powoduje podświetlenie nagłówka na czerwono z komunikatem `⚠ Wybierz pokój!`.
+
+### Asyncio + Tkinter
+
+GUI działa w głównym wątku Tkintera, a protokół RCMP w osobnym wątku z własną pętlą asyncio. Komunikacja między wątkami odbywa się przez `asyncio.run_coroutine_threadsafe` (wątek GUI → asyncio) oraz `self.after(0, callback)` (asyncio → wątek GUI).
+
+---
+
+## 13. Konfiguracja PyCharm
+
+W folderze `.idea/runConfigurations/` znajdują się gotowe konfiguracje uruchomienia:
+
+| Konfiguracja | Opis |
+|---|---|
+| `RCMP Server` | uruchamia serwer (`python -m server.main`) |
+| `RCMP Client` | uruchamia klienta (`python -m client.main`) |
+| `RCMP Seed DB` | wypełnia bazę testowymi danymi |
+| `RCMP Generate Certs` | generuje certyfikaty TLS |
+
+Każda konfiguracja ma ustawiony `Working directory` na korzeń projektu, co zapewnia poprawne wczytanie `.env` i certyfikatów.
+
+---
+
+## 14. Znane ograniczenia
+
+- Lista pokojów w kliencie jest hardcodowana (3 pokoje). Docelowo powinna być pobierana z serwera przez dedykowany typ wiadomości `ROOMS_LIST`.
+- Historia wiadomości przechowywana jest tylko w pamięci klienta — po restarcie jest tracona. Docelowo można ją pobierać z bazy przez `HISTORY_REQUEST / HISTORY_RESPONSE`.
+- Zapraszany użytkownik musi być online — zaproszenia dla offline użytkowników nie są kolejkowane.
+- Certyfikaty TLS są self-signed — w produkcji należy użyć certyfikatu od zaufanego CA.

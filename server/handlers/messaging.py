@@ -72,6 +72,8 @@ async def handle_send_message(
             data, session, router, db_pool,
             target_id, seq_id, body, msg_id
         )
+    elif target_type == "invite":
+        await _route_invite(data, session, router, db_pool, payload)
     else:
         await router.send_error(session.writer, ErrorCode.MALFORMED_ENVELOPE,
                                 "Invalid target_type", msg_id)
@@ -179,3 +181,42 @@ async def _send_ack(session: Session, router: MessageRouter, ref_msg_id: str):
         }
     }
     await router._write(session.writer, ack)
+
+
+async def _route_invite(data, session, router, db_pool, payload):
+    """Wysyła ROOM_INVITE do użytkownika (tylko admin)."""
+    if session.role != "admin":
+        await router.send_error(session.writer, ErrorCode.FORBIDDEN,
+                                "Only admin can send invites", data.get("msg_id"))
+        return
+
+    invite_to = payload.get("invite_to", "")
+    room_id = payload.get("target_id")
+    room_name = payload.get("room_name", "")
+
+    # Znajdź user_id odbiorcy
+    row = await db_pool.fetchrow(
+        "SELECT id FROM users WHERE username = $1", invite_to
+    )
+    if not row:
+        await router.send_error(session.writer, ErrorCode.USER_NOT_FOUND,
+                                f"User '{invite_to}' not found", data.get("msg_id"))
+        return
+
+    target_user_id = row["id"]
+
+    invite_frame = {
+        "type": "ROOM_INVITE",
+        "msg_id": str(uuid.uuid4()),
+        "ts": int(time.time() * 1000),
+        "token": None,
+        "payload": {
+            "room_id": room_id,
+            "room_name": room_name,
+            "invited_by": session.username,
+        }
+    }
+    sent = await router.send_to_user(target_user_id, invite_frame)
+    if not sent:
+        await router.send_error(session.writer, ErrorCode.USER_NOT_FOUND,
+                                f"User '{invite_to}' is offline", data.get("msg_id"))
