@@ -50,6 +50,7 @@ async def handle_send_message(
 
     # Weryfikacja HMAC
     if not verify_hmac(session.hmac_secret, msg_id, data["ts"], seq_id, body, hmac_received):
+        print(f"[HMAC] FAILED for {session.username}: target_type={target_type}, target_id={target_id}, body={body[:50]}, hmac={hmac_received[:20]}...")
         await router.send_error(session.writer, ErrorCode.INVALID_HMAC,
                                 ErrorCode.get_message(ErrorCode.INVALID_HMAC), msg_id)
         return
@@ -74,6 +75,8 @@ async def handle_send_message(
         )
     elif target_type == "invite":
         await _route_invite(data, session, router, db_pool, payload)
+    elif target_type == "dm_by_username":
+        await _route_dm_by_username(data, session, router, db_pool, payload, msg_id)
     else:
         await router.send_error(session.writer, ErrorCode.MALFORMED_ENVELOPE,
                                 "Invalid target_type", msg_id)
@@ -220,3 +223,39 @@ async def _route_invite(data, session, router, db_pool, payload):
     if not sent:
         await router.send_error(session.writer, ErrorCode.USER_NOT_FOUND,
                                 f"User '{invite_to}' is offline", data.get("msg_id"))
+
+async def _route_dm_by_username(data, session, router, db_pool, payload, msg_id):
+    """Wysyła wiadomość prywatną po nazwie użytkownika."""
+    target_username = payload.get("target_username", "")
+    body = payload.get("body", "")
+
+    row = await db_pool.fetchrow(
+        "SELECT id FROM users WHERE username = $1", target_username
+    )
+    if not row:
+        await router.send_error(session.writer, ErrorCode.USER_NOT_FOUND,
+                                f"User '{target_username}' not found", msg_id)
+        return
+
+    target_user_id = row["id"]
+
+    if not router.is_online(target_user_id):
+        await router.send_error(session.writer, ErrorCode.USER_NOT_FOUND,
+                                f"User '{target_username}' is offline", msg_id)
+        return
+
+    deliver = {
+        "type": "DELIVER_MESSAGE",
+        "msg_id": str(uuid.uuid4()),
+        "ts": int(time.time() * 1000),
+        "token": None,
+        "payload": {
+            "from_user": session.username,
+            "from_user_id": session.user_id,
+            "target_type": "dm",
+            "target_username": target_username,
+            "body": body,
+            "original_msg_id": msg_id,
+        }
+    }
+    await router.send_to_user(target_user_id, deliver)

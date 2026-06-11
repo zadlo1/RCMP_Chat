@@ -1,17 +1,21 @@
 import customtkinter as ctk
 import time
-from client.gui.widgets import MessageBubble, SystemMessage, RoomListItem, UserListItem, StatusBar
+from client.gui.widgets import MessageBubble, SystemMessage, RoomListItem, UserListItem, StatusBar, FriendListItem
 
 
 class ChatWindow(ctk.CTkFrame):
 
-    def __init__(self, parent, username: str, on_send, on_join_room, on_leave_room, **kwargs):
+    def __init__(self, parent, username: str, on_send, on_join_room,
+                 on_leave_room, on_add_friend=None, on_open_dm=None, **kwargs):
         super().__init__(parent, corner_radius=0, **kwargs)
 
         self.username = username
         self.on_send = on_send
         self.on_join_room = on_join_room
         self.on_leave_room = on_leave_room
+        self.on_add_friend = on_add_friend
+        self.on_open_dm = on_open_dm
+        self._friend_items: dict[str, object] = {}
 
         self._current_room_id = None
         self._current_room_name = None
@@ -61,8 +65,16 @@ class ChatWindow(ctk.CTkFrame):
             anchor="w", padx=14, pady=(10, 2))
 
         self._users_frame = ctk.CTkScrollableFrame(
+            self._sidebar, height=120, fg_color="transparent")
+        self._users_frame.pack(fill="x", padx=4)
+
+        ctk.CTkLabel(self._sidebar, text="ZNAJOMI",
+                     font=ctk.CTkFont(size=10), text_color="#888888").pack(
+            anchor="w", padx=14, pady=(10, 2))
+
+        self._friends_frame = ctk.CTkScrollableFrame(
             self._sidebar, fg_color="transparent")
-        self._users_frame.pack(fill="both", expand=True, padx=4)
+        self._friends_frame.pack(fill="both", expand=True, padx=4)
 
         footer = ctk.CTkFrame(self._sidebar, corner_radius=0, height=48)
         footer.pack(fill="x", side="bottom")
@@ -274,8 +286,16 @@ class ChatWindow(ctk.CTkFrame):
             body=body,
             ts=ts,
             own=own,
+            on_username_click=self._on_username_click if not own else None,
         )
         bubble.pack(fill="x", pady=1)
+
+    def _on_username_click(self, username: str):
+        """Kliknięcie pseudonimu w czacie — opcja dodania do znajomych."""
+        if username == self.username:
+            return
+        if self.on_add_friend:
+            self.on_add_friend(username)
 
     def _render_system(self, text: str):
         msg = SystemMessage(self._messages_frame, text=text)
@@ -324,6 +344,48 @@ class ChatWindow(ctk.CTkFrame):
                 status=user.get("status", "online"),
             )
             item.pack(fill="x", pady=1)
+
+    # ------------------------------------------------------------------
+    # Znajomi
+    # ------------------------------------------------------------------
+
+    def set_friends(self, friends: list):
+        """Odświeża listę znajomych."""
+        print(f"[CHAT_WINDOW] set_friends wywołane z {len(friends)} znajomymi")
+        for widget in self._friends_frame.winfo_children():
+            widget.destroy()
+        self._friend_items.clear()
+
+        if not friends:
+            ctk.CTkLabel(self._friends_frame, text="Brak znajomych",
+                         font=ctk.CTkFont(size=11),
+                         text_color="#555555").pack(pady=8)
+            return
+
+        for f in friends:
+            uname = f["username"]
+            status = f.get("status", "offline")
+            pending = f.get("friendship_status") == "pending"
+            print(f"[CHAT_WINDOW] Dodawanie znajomego: {uname}, status={status}, pending={pending}")
+            item = FriendListItem(
+                self._friends_frame,
+                username=uname,
+                status=status,
+                pending=pending,
+                on_click=self._on_friend_click,
+            )
+            item.pack(fill="x", pady=1)
+            self._friend_items[uname] = item
+        print(f"[CHAT_WINDOW] Dodano {len(self._friend_items)} znajomych do GUI")
+
+    def update_friend_status(self, username: str, status: str):
+        item = self._friend_items.get(username)
+        if item:
+            item.update_status(status)
+
+    def _on_friend_click(self, username: str):
+        if self.on_open_dm:
+            self.on_open_dm(username)
 
     # ------------------------------------------------------------------
     # Wysyłanie

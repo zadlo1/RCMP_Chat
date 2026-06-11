@@ -32,7 +32,9 @@ class RCMPApp(ctk.CTk):
         self._current_room_name: str = None
         self._jwt_exp: int = None
         self._available_rooms: dict = {}
-        self._bg_tasks: list = []  # referencje do tasków żeby GC ich nie zebrał
+        self._bg_tasks: list = []
+        self._dm_windows: dict[str, object] = {}  # {username: DMWindow}
+        self._pending_friends: list = []  # Lista znajomych otrzymana przed utworzeniem GUI
 
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._run_loop, daemon=True)
@@ -80,7 +82,11 @@ class RCMPApp(ctk.CTk):
         self.receiver.on("PING",            self._on_ping)
         self.receiver.on("PONG",            self._on_pong)
         self.receiver.on("ROOM_INVITE",     self._on_room_invite)
-        self.receiver.on("ROOMS_LIST",      self._on_rooms_list)
+        self.receiver.on("ROOMS_LIST",          self._on_rooms_list)
+        self.receiver.on("FRIENDS_LIST",         self._on_friends_list)
+        self.receiver.on("FRIEND_REQUEST",        self._on_friend_request_incoming)
+        self.receiver.on("FRIEND_REQUEST_ACCEPT", self._on_friend_request_accepted)
+        self.receiver.on("FRIEND_STATUS_UPDATE",  self._on_friend_status_update)
         self.receiver.on("ERROR",           self._on_error)
         self.receiver.on("BYE_ACK",         self._on_bye_ack)
 
@@ -102,6 +108,9 @@ class RCMPApp(ctk.CTk):
         self.sender.token = payload.get("session_token")
         self.sender.hmac_secret = payload.get("hmac_secret")
         self._jwt_exp = payload.get("expires_in", 3600)
+        # Wyczyść stare pending ACKs z poprzedniej sesji (stary HMAC secret!)
+        self.sender._pending_acks.clear()
+        self.sender._seq_id = 0
         self.after(0, self._show_chat)
 
     async def _on_login_err(self, data: dict):
@@ -116,7 +125,26 @@ class RCMPApp(ctk.CTk):
         ts = data.get("ts")
         own = username == self._username
         msg_id = data.get("msg_id")
-        self.after(0, lambda: self._chat.add_message(username, body, ts, own))
+        target_type = payload.get("target_type", "room")
+
+        if target_type == "dm":
+            # Wiadomość prywatna — otwórz lub zaktualizuj DMWindow
+            dm_key = payload.get("from_user", "?")
+            def show_dm(u=dm_key, b=body, t=ts):
+                if u not in self._dm_windows:
+                    self._open_dm(u)
+                dm = self._dm_windows.get(u)
+                if dm:
+                    dm.add_message(u, b, t, own=False)
+                    try:
+                        dm.deiconify()
+                        dm.lift()
+                    except Exception:
+                        pass
+            self.after(0, show_dm)
+        else:
+            self.after(0, lambda: self._chat.add_message(username, body, ts, own))
+
         await self.sender.send_message_ack(msg_id)
 
     async def _on_room_event(self, data: dict):
@@ -199,6 +227,61 @@ class RCMPApp(ctk.CTk):
         self.conn.disconnect()
         self.after(0, self.destroy)
 
+    async def _on_friends_list(self, data: dict):
+        payload = data.get("payload", {})
+        friends = payload.get("friends", [])
+        print(f"[APP] Otrzymano FRIENDS_LIST: {len(friends)} znajomych, _chat={self._chat is not None}")
+        for f in friends:
+            print(f"  - {f['username']}: {f.get('friendship_status')}, {f.get('status')}")
+
+        def update_friends():
+            if self._chat:
+                print(f"[APP] Wywołuję _chat.set_friends z {len(friends)} znajomymi")
+                self._chat.set_friends(friends)
+            else:
+                print("[APP] _chat jeszcze nie istnieje, zapisuję do _pending_friends")
+                self._pending_friends = friends
+
+        self.after(0, update_friends)
+
+    async def _on_friend_request_incoming(self, data: dict):
+        payload = data.get("payload", {})
+        from_user = payload.get("from_user", "?")
+        from_user_id = payload.get("from_user_id")
+
+        def accept():
+            self._run_async(self.sender.send(
+                "FRIEND_REQUEST_ACCEPT", {"from_user_id": from_user_id}
+            ))
+
+        def decline():
+            self._run_async(self.sender.send(
+                "FRIEND_REQUEST_DECLINE", {"from_user_id": from_user_id}
+            ))
+
+        self.after(0, lambda: FriendRequestDialog(
+            self, from_user, on_accept=accept, on_decline=decline
+        ))
+
+    async def _on_friend_request_accepted(self, data: dict):
+        payload = data.get("payload", {})
+        username = payload.get("username", "?")
+        self.after(0, lambda: self._chat.add_system_message(
+            f"{username} zaakceptował zaproszenie do znajomych"
+        ) if self._chat else None)
+        # Serwer automatycznie wysyła zaktualizowaną FRIENDS_LIST po akceptacji
+
+    async def _on_friend_status_update(self, data: dict):
+        payload = data.get("payload", {})
+        username = payload.get("username", "?")
+        status = payload.get("status", "offline")
+        self.after(0, lambda: self._chat.update_friend_status(username, status)
+                   if self._chat else None)
+        # Aktualizuj DM window jeśli otwarte
+        dm = self._dm_windows.get(username)
+        if dm:
+            self.after(0, lambda: dm.set_status(status))
+
     # ------------------------------------------------------------------
     # Akcje użytkownika
     # ------------------------------------------------------------------
@@ -214,8 +297,16 @@ class RCMPApp(ctk.CTk):
             on_send=self._send_message,
             on_join_room=self._join_room,
             on_leave_room=self._leave_room,
+            on_add_friend=self._show_add_friend_dialog,
+            on_open_dm=self._open_dm,
         )
         self._chat.pack(fill="both", expand=True)
+
+        # Zastosuj listę znajomych jeśli przyszła przed utworzeniem GUI
+        if self._pending_friends:
+            print(f"[APP] Stosowanie odłożonej listy {len(self._pending_friends)} znajomych")
+            self._chat.set_friends(self._pending_friends)
+            self._pending_friends = []
 
     def _send_invite(self, room_id: int, room_name: str, username: str):
         """Wysyła zaproszenie do prywatnego pokoju."""
@@ -255,6 +346,63 @@ class RCMPApp(ctk.CTk):
         ts = int(time.time() * 1000)
         self._chat.add_message(self._username, body, ts, own=True)
         self._run_async(self.sender.send_message("room", room_id, body))
+
+    def _show_add_friend_dialog(self, username: str = None):
+        AddFriendDialog(self, prefill=username, on_send=self._send_friend_request)
+
+    def _send_friend_request(self, username: str):
+        self._run_async(self.sender.send("FRIEND_REQUEST", {"username": username}))
+
+    def _open_dm(self, username: str):
+        if username in self._dm_windows:
+            try:
+                self._dm_windows[username].lift()
+                self._dm_windows[username].focus()
+                return
+            except Exception:
+                pass
+        win = DMWindow(
+            self,
+            my_username=self._username,
+            friend_username=username,
+            on_send=lambda body: self._send_dm(username, body),
+        )
+        self._dm_windows[username] = win
+
+    def _send_dm(self, target_username: str, body: str):
+        self._run_async(self._async_send_dm(target_username, body))
+
+    async def _async_send_dm(self, target_username: str, body: str):
+        # Pobierz user_id odbiorcy - musimy wysłać przez send_message która oblicza HMAC
+        # Ale send_message przyjmuje target_id, a my mamy tylko username
+        # Rozwiązanie: rozszerz sender.send_message o target_type="dm_by_username"
+        # lub stwórz nową metodę send_dm w senderze
+        # Tymczasowo: używamy bezpośredniego wywołania z obliczonym HMAC
+        import time
+        import uuid
+
+        msg_id = str(uuid.uuid4())
+        self.sender._seq_id += 1
+        seq_id = self.sender._seq_id
+        ts = int(time.time() * 1000)
+
+        hmac_val = self.sender._compute_hmac(msg_id, ts, seq_id, body)
+
+        frame = {
+            "type": "SEND_MESSAGE",
+            "msg_id": msg_id,
+            "ts": ts,
+            "token": self.sender.token,
+            "payload": {
+                "target_type": "dm_by_username",
+                "target_username": target_username,
+                "seq_id": seq_id,
+                "body": body,
+                "hmac": hmac_val,
+            }
+        }
+        await self.sender._write(frame)
+        self.sender._pending_acks[msg_id] = (frame, 1, time.time())
 
     # ------------------------------------------------------------------
     # Pętle w tle
@@ -448,3 +596,182 @@ class SendInviteDialog(ctk.CTkToplevel):
             return
         self.on_send(self.room_id, self.room_name, username)
         self.destroy()
+
+
+class FriendRequestDialog(ctk.CTkToplevel):
+    """Okno przychodzącego zaproszenia do znajomych."""
+
+    def __init__(self, parent, from_user: str, on_accept, on_decline):
+        super().__init__(parent)
+        self.on_accept = on_accept
+        self.on_decline = on_decline
+
+        self.title("Zaproszenie do znajomych")
+        self.geometry("340x200")
+        self.resizable(False, False)
+        self.grab_set()
+
+        ctk.CTkLabel(self, text="👤  Zaproszenie do znajomych",
+                     font=ctk.CTkFont(size=15, weight="bold")).pack(pady=(24, 8))
+
+        ctk.CTkLabel(
+            self,
+            text=f"{from_user} chce dodać Cię do znajomych.",
+            font=ctk.CTkFont(size=13),
+            text_color="#CCCCCC",
+        ).pack(pady=(0, 20))
+
+        btn_frame = ctk.CTkFrame(self, fg_color="transparent")
+        btn_frame.pack()
+
+        ctk.CTkButton(
+            btn_frame, text="Akceptuj", width=130, height=38,
+            fg_color="#1D9E75", hover_color="#158A63",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            command=self._accept,
+        ).pack(side="left", padx=8)
+
+        ctk.CTkButton(
+            btn_frame, text="Odrzuć", width=130, height=38,
+            fg_color="#555555", hover_color="#CC4444",
+            font=ctk.CTkFont(size=13),
+            command=self._decline,
+        ).pack(side="left", padx=8)
+
+    def _accept(self):
+        self.on_accept()
+        self.destroy()
+
+    def _decline(self):
+        self.on_decline()
+        self.destroy()
+
+
+class AddFriendDialog(ctk.CTkToplevel):
+    """Okno dodawania znajomego."""
+
+    def __init__(self, parent, on_send, prefill: str = None):
+        super().__init__(parent)
+        self.on_send = on_send
+
+        self.title("Dodaj znajomego")
+        self.geometry("340x200")
+        self.resizable(False, False)
+        self.grab_set()
+
+        ctk.CTkLabel(self, text="Dodaj znajomego",
+                     font=ctk.CTkFont(size=16, weight="bold")).pack(pady=(24, 4))
+
+        ctk.CTkLabel(self, text="Podaj nazwę użytkownika:",
+                     font=ctk.CTkFont(size=12),
+                     text_color="#AAAAAA").pack(pady=(8, 4))
+
+        self._entry = ctk.CTkEntry(self, placeholder_text="np. bob",
+                                   height=38, font=ctk.CTkFont(size=13))
+        self._entry.pack(fill="x", padx=32, pady=(0, 4))
+
+        if prefill:
+            self._entry.insert(0, prefill)
+
+        self._error = ctk.CTkLabel(self, text="", text_color="#CC4444",
+                                   font=ctk.CTkFont(size=11))
+        self._error.pack()
+
+        ctk.CTkButton(
+            self, text="Wyślij zaproszenie", height=38,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            command=self._send,
+        ).pack(fill="x", padx=32, pady=(8, 0))
+
+        self._entry.bind("<Return>", lambda e: self._send())
+        self.after(100, lambda: self._entry.focus())
+        if prefill:
+            self._entry.select_range(0, "end")
+
+    def _send(self):
+        username = self._entry.get().strip()
+        if not username:
+            self._error.configure(text="Podaj nazwę użytkownika.")
+            return
+        self.on_send(username)
+        self.destroy()
+
+
+class DMWindow(ctk.CTkToplevel):
+    """Okno wiadomości prywatnych (Direct Message)."""
+
+    def __init__(self, parent, my_username: str, friend_username: str, on_send):
+        super().__init__(parent)
+        self.my_username = my_username
+        self.friend_username = friend_username
+        self.on_send = on_send
+
+        self.title(f"DM — {friend_username}")
+        self.geometry("480x520")
+        self.minsize(360, 400)
+
+        # Nagłówek
+        header = ctk.CTkFrame(self, height=48, corner_radius=0)
+        header.pack(fill="x")
+        header.pack_propagate(False)
+
+        ctk.CTkLabel(header, text=f"💬  {friend_username}",
+                     font=ctk.CTkFont(size=14, weight="bold")).pack(side="left", padx=14)
+
+        self._status_label = ctk.CTkLabel(header, text="● online",
+                                          font=ctk.CTkFont(size=11),
+                                          text_color="#1D9E75")
+        self._status_label.pack(side="right", padx=14)
+
+        # Wiadomości
+        self._messages = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        self._messages.pack(fill="both", expand=True, padx=4, pady=4)
+
+        # Input
+        input_frame = ctk.CTkFrame(self, height=54, corner_radius=0)
+        input_frame.pack(fill="x")
+        input_frame.pack_propagate(False)
+
+        self._input = ctk.CTkEntry(
+            input_frame,
+            placeholder_text="Napisz wiadomość...",
+            font=ctk.CTkFont(size=13), height=36,
+        )
+        self._input.pack(side="left", fill="x", expand=True, padx=(10, 4), pady=9)
+        self._input.bind("<Return>", lambda e: self._send())
+
+        ctk.CTkButton(
+            input_frame, text="➤", width=40, height=36,
+            font=ctk.CTkFont(size=16),
+            command=self._send,
+        ).pack(side="right", padx=(0, 10), pady=9)
+
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def add_message(self, username: str, body: str, ts: int = None, own: bool = False):
+        import time as t
+        ts = ts or int(t.time() * 1000)
+        from client.gui.widgets import MessageBubble
+        bubble = MessageBubble(
+            self._messages, username=username,
+            body=body, ts=ts, own=own,
+        )
+        bubble.pack(fill="x", pady=1)
+        self._messages.after(
+            50, lambda: self._messages._parent_canvas.yview_moveto(1.0))
+
+    def set_status(self, status: str):
+        color = "#1D9E75" if status == "online" else "#888888"
+        self._status_label.configure(
+            text=f"● {status}", text_color=color)
+
+    def _send(self):
+        body = self._input.get().strip()
+        if not body:
+            return
+        self._input.delete(0, "end")
+        self.add_message(self.my_username, body, own=True)
+        self.on_send(body)
+
+    def _on_close(self):
+        self.withdraw()

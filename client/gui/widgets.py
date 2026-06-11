@@ -5,12 +5,12 @@ from datetime import datetime
 class MessageBubble(ctk.CTkFrame):
     """Pojedyncza wiadomość w oknie czatu."""
 
-    def __init__(self, parent, username: str, body: str, ts: int, own: bool = False, **kwargs):
+    def __init__(self, parent, username: str, body: str, ts: int,
+                 own: bool = False, on_username_click=None, **kwargs):
         super().__init__(parent, fg_color="transparent", **kwargs)
 
         time_str = datetime.fromtimestamp(ts / 1000).strftime("%H:%M")
 
-        # Wyrównanie — własne wiadomości po prawej
         anchor = "e" if own else "w"
         padx = (40, 4) if own else (4, 40)
 
@@ -20,12 +20,25 @@ class MessageBubble(ctk.CTkFrame):
         frame = ctk.CTkFrame(self, fg_color=bubble_color, corner_radius=12)
         frame.pack(anchor=anchor, padx=padx, pady=2)
 
-        meta = ctk.CTkLabel(
-            frame,
-            text=f"{username}  {time_str}",
-            font=ctk.CTkFont(size=10),
-            text_color="#AAAACC",
-        )
+        # Pseudonim — klikalny jeśli nie własna wiadomość
+        if not own and on_username_click:
+            meta = ctk.CTkLabel(
+                frame,
+                text=f"{username}  {time_str}",
+                font=ctk.CTkFont(size=10, underline=True),
+                text_color="#AAAACC",
+                cursor="hand2",
+            )
+            meta.bind("<Button-1>", lambda e: on_username_click(username))
+            meta.bind("<Enter>", lambda e: meta.configure(text_color="#7777FF"))
+            meta.bind("<Leave>", lambda e: meta.configure(text_color="#AAAACC"))
+        else:
+            meta = ctk.CTkLabel(
+                frame,
+                text=f"{username}  {time_str}",
+                font=ctk.CTkFont(size=10),
+                text_color="#AAAACC",
+            )
         meta.pack(anchor="w", padx=10, pady=(6, 0))
 
         msg = ctk.CTkLabel(
@@ -139,3 +152,52 @@ class StatusBar(ctk.CTkFrame):
     def set_jwt_ttl(self, seconds: int):
         minutes = seconds // 60
         self._jwt_label.configure(text=f"JWT: {minutes} min")
+
+class FriendListItem(ctk.CTkFrame):
+    """Element listy znajomych."""
+
+    STATUS_COLORS = {
+        "online":  "#1D9E75",
+        "away":    "#EF9F27",
+        "offline": "#555555",
+    }
+
+    def __init__(self, parent, username: str, status: str = "offline",
+                 on_click=None, pending: bool = False, **kwargs):
+        super().__init__(parent, fg_color="transparent", cursor="hand2", **kwargs)
+
+        self._on_click = on_click
+        self._username = username
+
+        dot_color = self.STATUS_COLORS.get(status, "#555555")
+
+        dot = ctk.CTkLabel(self, text="●", font=ctk.CTkFont(size=10),
+                           text_color=dot_color, width=16)
+        dot.pack(side="left", padx=(8, 2), pady=4)
+
+        label = ctk.CTkLabel(
+            self, text=username,
+            font=ctk.CTkFont(size=13),
+            text_color="#AAAAAA" if status == "offline" else "#FFFFFF",
+            anchor="w",
+        )
+        label.pack(side="left", fill="x", expand=True, pady=4)
+
+        if pending:
+            ctk.CTkLabel(self, text="oczekuje",
+                         font=ctk.CTkFont(size=10),
+                         text_color="#EF9F27").pack(side="right", padx=6)
+
+        self.bind("<Button-1>", self._click)
+        label.bind("<Button-1>", self._click)
+        dot.bind("<Button-1>", self._click)
+
+    def update_status(self, status: str):
+        dot_color = self.STATUS_COLORS.get(status, "#555555")
+        for w in self.winfo_children():
+            if isinstance(w, ctk.CTkLabel) and w.cget("text") == "●":
+                w.configure(text_color=dot_color)
+
+    def _click(self, event=None):
+        if self._on_click:
+            self._on_click(self._username)

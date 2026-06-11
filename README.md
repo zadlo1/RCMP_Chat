@@ -586,3 +586,82 @@ Każda konfiguracja ma ustawiony `Working directory` na korzeń projektu, co zap
 - Historia wiadomości przechowywana jest tylko w pamięci klienta — po restarcie jest tracona. Docelowo można ją pobierać z bazy przez `HISTORY_REQUEST / HISTORY_RESPONSE`.
 - Zapraszany użytkownik musi być online — zaproszenia dla offline użytkowników nie są kolejkowane.
 - Certyfikaty TLS są self-signed — w produkcji należy użyć certyfikatu od zaufanego CA.
+---
+
+## 15. System znajomych
+
+### Mechanizm
+
+System znajomych umożliwia użytkownikom nawiązywanie relacji 1:1 i prowadzenie prywatnych rozmów. Zaproszenie można wysłać tylko do użytkownika który jest aktualnie online.
+
+### Przepływ zaproszenia
+
+1. Użytkownik klika pseudonim innego użytkownika w czacie grupowym (pseudonim jest podkreślony i klikalny) lub klika znajomego z listy.
+2. Otwiera się okno **Dodaj znajomego** z wypełnioną nazwą użytkownika.
+3. Po wysłaniu zaproszenia odbiorca widzi okno dialogowe z przyciskami **Akceptuj** / **Odrzuć**.
+4. Po akceptacji obaj użytkownicy pojawiają się na swoich listach znajomych.
+5. Odrzucenie zaproszenia nie powiadamia nadawcy.
+
+### Nowe typy wiadomości
+
+| Typ | Kierunek | Opis |
+|---|---|---|
+| `FRIEND_REQUEST` | C → S → C | zaproszenie do znajomych |
+| `FRIEND_REQUEST_ACCEPT` | C → S → C | akceptacja zaproszenia |
+| `FRIEND_REQUEST_DECLINE` | C → S | odrzucenie zaproszenia |
+| `FRIEND_STATUS_UPDATE` | S → C | zmiana statusu znajomego (online/offline) |
+| `FRIENDS_LIST` | S → C | lista znajomych wysyłana po zalogowaniu |
+| `DIRECT_MESSAGE` | C ↔ S ↔ C | wiadomość prywatna między znajomymi |
+
+### Lista znajomych w sidebarze
+
+Sekcja **ZNAJOMI** w sidebarze pokazuje wszystkich znajomych z kolorowym wskaźnikiem statusu:
+
+- 🟢 zielony — online
+- 🟡 żółty — away
+- ⚫ szary — offline
+
+Status aktualizuje się w czasie rzeczywistym gdy znajomy się loguje lub rozłącza. Kliknięcie znajomego otwiera okno Direct Message.
+
+### Direct Messages (DM)
+
+Każda rozmowa prywatna ma własne okno z historią wiadomości i statusem odbiorcy. Okno minimalizuje się zamiast zamykać — historię widać po ponownym otwarciu. Wiadomości DM są dostarczane tylko gdy odbiorca jest online.
+
+### Baza danych
+
+Nowa tabela `friendships`:
+
+| Kolumna | Typ | Opis |
+|---|---|---|
+| `user_id` | INTEGER | nadawca zaproszenia |
+| `friend_id` | INTEGER | odbiorca zaproszenia |
+| `status` | VARCHAR | `pending` / `accepted` / `declined` |
+| `created_at` | TIMESTAMPTZ | data wysłania zaproszenia |
+| `updated_at` | TIMESTAMPTZ | data ostatniej zmiany statusu |
+
+### Ograniczenia
+
+- Zaproszenie można wysłać tylko do użytkownika online.
+- Zaproszenia dla offline użytkowników nie są kolejkowane.
+- Historia DM przechowywana jest tylko w pamięci klienta — po restarcie jest tracona.
+
+---
+
+## 16. Zmiany w protokole względem etapu 1
+
+Podczas implementacji protokół RCMP został rozszerzony o następujące typy wiadomości nieobecne w pierwotnej specyfikacji:
+
+| Typ | Powód dodania |
+|---|---|
+| `ROOMS_LIST` | dynamiczne pobieranie listy pokojów z serwera zamiast hardcodowania |
+| `ROOM_INVITE` | zaproszenia do pokojów prywatnych przez GUI |
+| `ROOM_INVITE_ACCEPT` | akceptacja zaproszenia do pokoju |
+| `ROOM_INVITE_DECLINE` | odrzucenie zaproszenia do pokoju |
+| `FRIEND_REQUEST` | zaproszenie do znajomych |
+| `FRIEND_REQUEST_ACCEPT` | akceptacja zaproszenia do znajomych |
+| `FRIEND_REQUEST_DECLINE` | odrzucenie zaproszenia do znajomych |
+| `FRIEND_STATUS_UPDATE` | powiadomienie o zmianie statusu znajomego |
+| `FRIENDS_LIST` | lista znajomych po zalogowaniu |
+| `DIRECT_MESSAGE` | wiadomości prywatne 1:1 między znajomymi |
+
+Wszystkie rozszerzenia zachowują kompatybilność z oryginalną kopertą protokołu (`type`, `msg_id`, `ts`, `token`, `payload`).

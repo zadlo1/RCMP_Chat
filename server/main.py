@@ -17,6 +17,11 @@ from server.handlers.bye import handle_bye
 from server.handlers.messaging import handle_send_message, handle_message_ack
 from server.handlers.rooms import handle_join_room, handle_leave_room
 from server.handlers.invite import handle_room_invite_accept, handle_room_invite_decline, send_invite
+from server.handlers.friends import (
+    handle_friend_request, handle_friend_request_accept,
+    handle_friend_request_decline, send_friends_list_on_login,
+    notify_friends_status
+)
 from shared.message_types import MessageType
 from shared.schemas import validate_envelope
 from shared.error_codes import ErrorCode
@@ -202,8 +207,12 @@ class RCMPServer:
             )
             if session.state == "ACTIVE":
                 self.router.register(session.user_id, writer)
-                # Wyślij listę dostępnych pokojów
+                # Wyślij listę dostępnych pokojów i znajomych
                 asyncio.create_task(self._send_rooms_list(session))
+                asyncio.create_task(send_friends_list_on_login(session, self.router, self.db_pool))
+                asyncio.create_task(notify_friends_status(
+                    session.user_id, session.username, "online", self.router, self.db_pool
+                ))
 
         elif msg_type == MessageType.JOIN_ROOM:
             await handle_join_room(data, session, self.router, self.room_manager)
@@ -225,6 +234,19 @@ class RCMPServer:
 
         elif msg_type == MessageType.PONG:
             await handle_pong(data, session)
+
+        elif msg_type == MessageType.FRIEND_REQUEST:
+            await handle_friend_request(data, session, self.router, self.db_pool)
+
+        elif msg_type == MessageType.FRIEND_REQUEST_ACCEPT:
+            await handle_friend_request_accept(data, session, self.router, self.db_pool)
+
+        elif msg_type == MessageType.FRIEND_REQUEST_DECLINE:
+            await handle_friend_request_decline(data, session, self.router, self.db_pool)
+
+        elif msg_type == MessageType.DIRECT_MESSAGE:
+            await handle_send_message(data, session, self.router,
+                                      self.room_manager, self.rate_limiter, self.db_pool)
 
         elif msg_type == MessageType.ROOM_INVITE_ACCEPT:
             await handle_room_invite_accept(data, session, self.router, self.db_pool)
@@ -317,6 +339,9 @@ class RCMPServer:
                 await self.db_pool.execute(
                     "UPDATE users SET status = 'offline', last_seen = NOW() WHERE id = $1",
                     session.user_id
+                )
+                await notify_friends_status(
+                    session.user_id, session.username, "offline", self.router, self.db_pool
                 )
             except Exception:
                 pass
