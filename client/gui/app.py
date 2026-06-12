@@ -220,8 +220,17 @@ class RCMPApp(ctk.CTk):
         code = payload.get("code")
         msg = payload.get("message", "Błąd serwera")
         print(f"[APP] ERROR {code}: {msg}")
+
         if self._chat:
             self.after(0, lambda: self._chat.add_system_message(f"Błąd {code}: {msg}"))
+        elif self._login_window:
+            # Błąd przed zalogowaniem — pokaż w oknie logowania
+            if code == 4031 and "already logged in" in msg:
+                err_msg = "Ten uzytkownik jest juz zalogowany w innej sesji."
+                self.after(0, lambda m=err_msg: self._login_window.show_error(m))
+            else:
+                err_msg = f"Blad serwera ({code}): {msg}"
+                self.after(0, lambda m=err_msg: self._login_window.show_error(m))
 
     async def _on_bye_ack(self, data: dict):
         self.conn.disconnect()

@@ -58,6 +58,18 @@ async def handle_login(
         session.state = "CLOSING"
         return
 
+    # Blokada podwójnego logowania — odrzuć jeśli sesja już istnieje
+    existing_session = session_manager.get_by_user_id(user["id"])
+    if existing_session is not None:
+        await router.send_error(
+            writer, ErrorCode.UNAUTHORIZED,
+            "User already logged in from another session",
+            data.get("msg_id")
+        )
+        await auth.log_event("DOUBLE_LOGIN_ATTEMPT", username=username, ip=ip)
+        session.state = "CLOSING"
+        return
+
     # Generowanie tokenu i sekretu HMAC
     token = auth.generate_token(user["id"], user["username"], user["role"])
     hmac_secret = auth.generate_hmac_secret()
