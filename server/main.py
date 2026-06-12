@@ -20,7 +20,7 @@ from server.handlers.invite import handle_room_invite_accept, handle_room_invite
 from server.handlers.friends import (
     handle_friend_request, handle_friend_request_accept,
     handle_friend_request_decline, send_friends_list_on_login,
-    notify_friends_status
+    notify_friends_status, handle_friend_remove
 )
 from shared.message_types import MessageType
 from shared.schemas import validate_envelope
@@ -247,6 +247,9 @@ class RCMPServer:
 
         elif msg_type == MessageType.FRIEND_REQUEST_DECLINE:
             await handle_friend_request_decline(data, session, self.router, self.db_pool)
+
+        elif msg_type == MessageType.FRIEND_REMOVE:
+            await handle_friend_remove(data, session, self.router, self.db_pool)
 
         elif msg_type == MessageType.DIRECT_MESSAGE:
             await handle_send_message(data, session, self.router,

@@ -6,7 +6,8 @@ from client.gui.widgets import MessageBubble, SystemMessage, RoomListItem, UserL
 class ChatWindow(ctk.CTkFrame):
 
     def __init__(self, parent, username: str, on_send, on_join_room,
-                 on_leave_room, on_add_friend=None, on_open_dm=None, **kwargs):
+                 on_leave_room, on_add_friend=None, on_open_dm=None,
+                 on_remove_friend=None, **kwargs):
         super().__init__(parent, corner_radius=0, **kwargs)
 
         self.username = username
@@ -15,6 +16,7 @@ class ChatWindow(ctk.CTkFrame):
         self.on_leave_room = on_leave_room
         self.on_add_friend = on_add_friend
         self.on_open_dm = on_open_dm
+        self.on_remove_friend = on_remove_friend
         self._friend_items: dict[str, object] = {}
 
         self._current_room_id = None
@@ -380,6 +382,7 @@ class ChatWindow(ctk.CTkFrame):
                 status=status,
                 pending=pending,
                 on_click=self._on_friend_click,
+                on_remove=self._on_friend_remove if not pending else None,
             )
             item.pack(fill="x", pady=1)
             self._friend_items[uname] = item
@@ -393,6 +396,10 @@ class ChatWindow(ctk.CTkFrame):
     def _on_friend_click(self, username: str):
         if self.on_open_dm:
             self.on_open_dm(username)
+
+    def _on_friend_remove(self, username: str):
+        if self.on_remove_friend:
+            self.on_remove_friend(username)
 
     # ------------------------------------------------------------------
     # Wysyłanie

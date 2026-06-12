@@ -342,6 +342,7 @@ class RCMPApp(ctk.CTk):
             on_leave_room=self._leave_room,
             on_add_friend=self._show_add_friend_dialog,
             on_open_dm=self._open_dm,
+            on_remove_friend=self._remove_friend,
         )
         self._chat.pack(fill="both", expand=True)
         self._chat.set_tls_version(self._tls_version)
@@ -351,6 +352,30 @@ class RCMPApp(ctk.CTk):
             print(f"[APP] Stosowanie odłożonej listy {len(self._pending_friends)} znajomych")
             self._chat.set_friends(self._pending_friends)
             self._pending_friends = []
+
+    def _remove_friend(self, username: str):
+        """Wysyła żądanie usunięcia znajomego z potwierdzeniem."""
+        ConfirmDialog(
+            self,
+            title="Usuń znajomego",
+            message=f"Czy na pewno chcesz usunąć {username} ze znajomych?",
+            on_confirm=lambda: self._run_async(
+                self.sender.send("FRIEND_REMOVE", {"username": username})
+            ),
+        )
+
+    async def _on_friend_removed(self, data: dict):
+        """Ktoś nas usunął ze znajomych."""
+        payload = data.get("payload", {})
+        username = payload.get("username", "?")
+        self._friends_cache = [
+            f for f in self._friends_cache if f.get("username") != username
+        ]
+        if self._chat:
+            self.after(0, lambda: self._chat.set_friends(self._friends_cache))
+            self.after(0, lambda: self._chat.add_system_message(
+                f"{username} usunął Cię ze znajomych"
+            ))
 
     def _send_invite(self, room_id: int, room_name: str, username: str):
         """Wysyła zaproszenie do prywatnego pokoju."""
@@ -809,3 +834,43 @@ class DMWindow(ctk.CTkToplevel):
 
     def _on_close(self):
         self.withdraw()
+
+class ConfirmDialog(ctk.CTkToplevel):
+    """Okno potwierdzenia akcji."""
+
+    def __init__(self, parent, title: str, message: str, on_confirm):
+        super().__init__(parent)
+        self.on_confirm = on_confirm
+
+        self.title(title)
+        self.geometry("340x160")
+        self.resizable(False, False)
+        self.grab_set()
+
+        ctk.CTkLabel(
+            self, text=message,
+            font=ctk.CTkFont(size=13),
+            wraplength=300,
+            justify="center",
+        ).pack(expand=True, pady=(24, 12))
+
+        btn_frame = ctk.CTkFrame(self, fg_color="transparent")
+        btn_frame.pack(pady=(0, 20))
+
+        ctk.CTkButton(
+            btn_frame, text="Usuń", width=110, height=34,
+            fg_color="#CC4444", hover_color="#AA2222",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            command=self._confirm,
+        ).pack(side="left", padx=8)
+
+        ctk.CTkButton(
+            btn_frame, text="Anuluj", width=110, height=34,
+            fg_color="#444444", hover_color="#555555",
+            font=ctk.CTkFont(size=13),
+            command=self.destroy,
+        ).pack(side="left", padx=8)
+
+    def _confirm(self):
+        self.on_confirm()
+        self.destroy()

@@ -298,3 +298,59 @@ async def _send_ok(session: Session, router: MessageRouter, message: str):
         "payload": {"event": "info", "message": message}
     }
     await router._write(session.writer, frame)
+
+async def handle_friend_remove(
+    data: dict,
+    session: Session,
+    router: MessageRouter,
+    db_pool: asyncpg.Pool,
+):
+    """
+    Usuwa znajomego — usuwa wpis z friendships w obu kierunkach.
+    Powiadamia drugą stronę o usunięciu.
+    """
+    msg_id = data.get("msg_id")
+    payload = data.get("payload") or {}
+    username = payload.get("username", "").strip()
+
+    if not username:
+        await router.send_error(session.writer, ErrorCode.MALFORMED_ENVELOPE,
+                                "Missing username", msg_id)
+        return
+
+    row = await db_pool.fetchrow(
+        "SELECT id FROM users WHERE username = $1", username
+    )
+    if not row:
+        await router.send_error(session.writer, ErrorCode.USER_NOT_FOUND,
+                                f"User '{username}' not found", msg_id)
+        return
+
+    friend_id = row["id"]
+
+    # Usuń w obu kierunkach
+    await db_pool.execute(
+        """
+        DELETE FROM friendships
+        WHERE (user_id = $1 AND friend_id = $2)
+           OR (user_id = $2 AND friend_id = $1)
+        """,
+        session.user_id, friend_id
+    )
+
+    # Powiadom drugą stronę jeśli online
+    if router.is_online(friend_id):
+        frame = {
+            "type": "FRIEND_REMOVE",
+            "msg_id": str(uuid.uuid4()),
+            "ts": int(time.time() * 1000),
+            "token": None,
+            "payload": {
+                "username": session.username,
+                "user_id": session.user_id,
+            }
+        }
+        await router.send_to_user(friend_id, frame)
+
+    # Odśwież listę znajomych nadawcy
+    await _send_friends_list(session, router, db_pool)

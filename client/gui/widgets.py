@@ -166,10 +166,11 @@ class FriendListItem(ctk.CTkFrame):
     }
 
     def __init__(self, parent, username: str, status: str = "offline",
-                 on_click=None, pending: bool = False, **kwargs):
+                 on_click=None, on_remove=None, pending: bool = False, **kwargs):
         super().__init__(parent, fg_color="transparent", cursor="hand2", **kwargs)
 
         self._on_click = on_click
+        self._on_remove = on_remove
         self._username = username
 
         dot_color = self.STATUS_COLORS.get(status, "#555555")
@@ -190,6 +191,18 @@ class FriendListItem(ctk.CTkFrame):
             ctk.CTkLabel(self, text="oczekuje",
                          font=ctk.CTkFont(size=10),
                          text_color="#EF9F27").pack(side="right", padx=6)
+        elif on_remove:
+            remove_btn = ctk.CTkLabel(
+                self, text="✕",
+                font=ctk.CTkFont(size=11),
+                text_color="#555555",
+                cursor="hand2",
+                width=20,
+            )
+            remove_btn.pack(side="right", padx=(0, 6))
+            remove_btn.bind("<Button-1>", lambda e: self._remove(e))
+            remove_btn.bind("<Enter>", lambda e: remove_btn.configure(text_color="#CC4444"))
+            remove_btn.bind("<Leave>", lambda e: remove_btn.configure(text_color="#555555"))
 
         self.bind("<Button-1>", self._click)
         label.bind("<Button-1>", self._click)
@@ -204,3 +217,9 @@ class FriendListItem(ctk.CTkFrame):
     def _click(self, event=None):
         if self._on_click:
             self._on_click(self._username)
+
+    def _remove(self, event=None):
+        if event:
+            event.widget.tk.call("break")
+        if self._on_remove:
+            self._on_remove(self._username)
