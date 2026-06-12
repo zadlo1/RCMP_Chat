@@ -54,6 +54,10 @@ class RCMPServer:
         self.auth = AuthManager(self.db_pool)
         self.room_manager = RoomManager(self.db_pool)
 
+        # Reset statusów — przy starcie serwera wszyscy są offline
+        await self.db_pool.execute("UPDATE users SET status = 'offline'")
+        print("[RCMP] Statusy użytkowników zresetowane do offline")
+
         ssl_ctx = self._build_ssl_context()
 
         server = await asyncio.start_server(

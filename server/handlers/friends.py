@@ -249,10 +249,13 @@ async def _send_friends_list_to_writer(writer, user_id: int, router: MessageRout
 
     friends = []
     for row in rows:
+        # Status bazuje wyłącznie na aktywnej sesji w routerze
+        # — wartość z bazy może być nieaktualna po restarcie serwera
+        is_online = router.is_online(row["id"])
         friends.append({
             "user_id": row["id"],
             "username": row["username"],
-            "status": row["status"] if router.is_online(row["id"]) else "offline",
+            "status": "online" if is_online else "offline",
             "friendship_status": row["friendship_status"],
             "is_incoming": row["requester_id"] != user_id,
         })
