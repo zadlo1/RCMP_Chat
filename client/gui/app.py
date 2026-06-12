@@ -226,16 +226,45 @@ class RCMPApp(ctk.CTk):
         msg = payload.get("message", "Błąd serwera")
         print(f"[APP] ERROR {code}: {msg}")
 
-        if self._chat:
-            self.after(0, lambda: self._chat.add_system_message(f"Błąd {code}: {msg}"))
-        elif self._login_window:
+        if not self._chat:
             # Błąd przed zalogowaniem — pokaż w oknie logowania
-            if code == 4031 and "already logged in" in msg:
-                err_msg = "Ten uzytkownik jest juz zalogowany w innej sesji."
+            if self._login_window:
+                if code == 4031 and "already logged in" in msg:
+                    err_msg = "Ten uzytkownik jest juz zalogowany w innej sesji."
+                else:
+                    err_msg = f"Blad serwera ({code}): {msg}"
                 self.after(0, lambda m=err_msg: self._login_window.show_error(m))
-            else:
-                err_msg = f"Blad serwera ({code}): {msg}"
-                self.after(0, lambda m=err_msg: self._login_window.show_error(m))
+            return
+
+        # Błędy związane ze znajomymi — pokaż jako popup
+        if code == 4042:
+            self.after(0, lambda m=msg: self._show_info_popup("Nieznany użytkownik", m))
+        elif code == 4001 and "already" in msg.lower():
+            self.after(0, lambda m=msg: self._show_info_popup("Znajomi", m))
+        else:
+            self.after(0, lambda: self._chat.add_system_message(f"Błąd {code}: {msg}"))
+
+    def _show_info_popup(self, title: str, message: str):
+        """Mały popup z informacją — zamyka się sam po 3 sekundach."""
+        popup = ctk.CTkToplevel(self)
+        popup.title(title)
+        popup.geometry("320x130")
+        popup.resizable(False, False)
+        popup.grab_set()
+
+        ctk.CTkLabel(
+            popup, text=message,
+            font=ctk.CTkFont(size=13),
+            wraplength=280,
+            justify="center",
+        ).pack(expand=True, pady=(20, 8))
+
+        ctk.CTkButton(
+            popup, text="OK", width=80, height=30,
+            command=popup.destroy,
+        ).pack(pady=(0, 16))
+
+        popup.after(3000, lambda: popup.destroy() if popup.winfo_exists() else None)
 
     async def _on_bye_ack(self, data: dict):
         self.conn.disconnect()

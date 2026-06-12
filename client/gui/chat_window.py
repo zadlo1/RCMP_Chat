@@ -64,13 +64,20 @@ class ChatWindow(ctk.CTkFrame):
                      font=ctk.CTkFont(size=10), text_color="#888888").pack(
             anchor="w", padx=14, pady=(10, 2))
 
-        self._users_frame = ctk.CTkScrollableFrame(
-            self._sidebar, height=120, fg_color="transparent")
-        self._users_frame.pack(fill="x", padx=4)
+        # Nagłówek ZNAJOMI z przyciskiem +
+        friends_header = ctk.CTkFrame(self._sidebar, fg_color="transparent")
+        friends_header.pack(fill="x", padx=14, pady=(10, 2))
 
-        ctk.CTkLabel(self._sidebar, text="ZNAJOMI",
-                     font=ctk.CTkFont(size=10), text_color="#888888").pack(
-            anchor="w", padx=14, pady=(10, 2))
+        ctk.CTkLabel(friends_header, text="ZNAJOMI",
+                     font=ctk.CTkFont(size=10),
+                     text_color="#888888").pack(side="left")
+
+        ctk.CTkButton(
+            friends_header, text="+", width=24, height=20,
+            font=ctk.CTkFont(size=14, weight="bold"),
+            fg_color="#3B3FA6", hover_color="#5558CC",
+            command=lambda: self.on_add_friend(None) if self.on_add_friend else None,
+        ).pack(side="right")
 
         self._friends_frame = ctk.CTkScrollableFrame(
             self._sidebar, fg_color="transparent")

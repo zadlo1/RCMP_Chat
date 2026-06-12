@@ -42,12 +42,6 @@ async def handle_friend_request(
 
     target_id = row["id"]
 
-    # Sprawdź czy odbiorca jest online
-    if not router.is_online(target_id):
-        await router.send_error(session.writer, ErrorCode.USER_NOT_FOUND,
-                                f"User '{target_username}' is offline", msg_id)
-        return
-
     # Sprawdź czy już są znajomymi lub zaproszenie istnieje
     existing = await db_pool.fetchrow(
         """
@@ -76,21 +70,23 @@ async def handle_friend_request(
         session.user_id, target_id
     )
 
-    # Wyślij zaproszenie do odbiorcy
-    invite_frame = {
-        "type": "FRIEND_REQUEST",
-        "msg_id": str(uuid.uuid4()),
-        "ts": int(time.time() * 1000),
-        "token": None,
-        "payload": {
-            "from_user": session.username,
-            "from_user_id": session.user_id,
+    # Jeśli odbiorca jest online — wyślij od razu
+    # Jeśli offline — zaproszenie zostanie dostarczone przy następnym logowaniu
+    if router.is_online(target_id):
+        invite_frame = {
+            "type": "FRIEND_REQUEST",
+            "msg_id": str(uuid.uuid4()),
+            "ts": int(time.time() * 1000),
+            "token": None,
+            "payload": {
+                "from_user": session.username,
+                "from_user_id": session.user_id,
+            }
         }
-    }
-    await router.send_to_user(target_id, invite_frame)
-
-    # Potwierdzenie dla nadawcy
-    await _send_ok(session, router, "Friend request sent")
+        await router.send_to_user(target_id, invite_frame)
+        await _send_ok(session, router, "Friend request sent")
+    else:
+        await _send_ok(session, router, f"Friend request sent. {target_username} will see it when they log in.")
 
 
 async def handle_friend_request_accept(
@@ -181,8 +177,31 @@ async def send_friends_list_on_login(
     router: MessageRouter,
     db_pool: asyncpg.Pool,
 ):
-    """Wysyła listę znajomych zaraz po zalogowaniu."""
+    """Wysyła listę znajomych i dostarcza oczekujące zaproszenia po zalogowaniu."""
     await _send_friends_list(session, router, db_pool)
+
+    # Dostarcz zaproszenia które przyszły gdy byliśmy offline
+    pending = await db_pool.fetch(
+        """
+        SELECT u.id, u.username
+        FROM friendships f
+        JOIN users u ON u.id = f.user_id
+        WHERE f.friend_id = $1 AND f.status = 'pending'
+        """,
+        session.user_id
+    )
+    for row in pending:
+        invite_frame = {
+            "type": "FRIEND_REQUEST",
+            "msg_id": str(uuid.uuid4()),
+            "ts": int(time.time() * 1000),
+            "token": None,
+            "payload": {
+                "from_user": row["username"],
+                "from_user_id": row["id"],
+            }
+        }
+        await router._write(session.writer, invite_frame)
 
 
 async def notify_friends_status(
