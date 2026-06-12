@@ -87,6 +87,18 @@ class RCMPSender:
         self._pending_acks[msg_id] = (frame, 1, time.time())
         return msg_id
 
+    async def send_room_invite(self, room_id: int, room_name: str, invite_to: str) -> str:
+        """Wysyła zaproszenie do prywatnego pokoju."""
+        return await self.send("SEND_MESSAGE", {
+            "target_type": "invite",
+            "target_id": room_id,
+            "room_name": room_name,
+            "invite_to": invite_to,
+            "seq_id": 0,
+            "body": f"Zaproszenie do #{room_name}",
+            "hmac": "",
+        })
+
     async def send_ping(self) -> str:
         return await self.send("PING")
 

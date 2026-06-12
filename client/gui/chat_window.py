@@ -427,3 +427,6 @@ class ChatWindow(ctk.CTkFrame):
 
     def set_jwt_ttl(self, seconds: int):
         self._status_bar.set_jwt_ttl(seconds)
+
+    def set_tls_version(self, version: str):
+        self._status_bar.set_tls_version(version)

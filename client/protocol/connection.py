@@ -90,3 +90,15 @@ class RCMPConnection:
 
     def reset_backoff(self):
         self._backoff_idx = 0
+
+    def get_tls_version(self) -> str:
+        """Zwraca wersję TLS aktywnego połączenia np. 'TLSv1.3'."""
+        if not self.writer:
+            return "TLS"
+        try:
+            ssl_obj = self.writer.get_extra_info("ssl_object")
+            if ssl_obj:
+                return ssl_obj.version() or "TLS"
+        except Exception:
+            pass
+        return "TLS"
