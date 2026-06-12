@@ -43,7 +43,9 @@ async def handle_send_message(
     hmac_received = payload.get("hmac", "")
 
     # Walidacja pól
-    if not target_type or target_id is None or not body:
+    # dm_by_username nie wymaga target_id — używa target_username
+    needs_target_id = target_type not in ("dm_by_username", "invite")
+    if not target_type or (needs_target_id and target_id is None) or not body:
         await router.send_error(session.writer, ErrorCode.MALFORMED_ENVELOPE,
                                 "Missing target_type, target_id or body", msg_id)
         return

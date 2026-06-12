@@ -129,18 +129,23 @@ class RCMPApp(ctk.CTk):
 
         if target_type == "dm":
             # Wiadomość prywatna — otwórz lub zaktualizuj DMWindow
-            dm_key = payload.get("from_user", "?")
-            def show_dm(u=dm_key, b=body, t=ts):
+            from_user = payload.get("from_user", "?")
+            # Klucz okna DM to zawsze nazwa drugiej osoby
+            dm_key = from_user if from_user != self._username else payload.get("target_username", from_user)
+            is_own = from_user == self._username
+
+            def show_dm(u=dm_key, b=body, t=ts, o=is_own, fu=from_user):
                 if u not in self._dm_windows:
                     self._open_dm(u)
                 dm = self._dm_windows.get(u)
                 if dm:
-                    dm.add_message(u, b, t, own=False)
-                    try:
-                        dm.deiconify()
-                        dm.lift()
-                    except Exception:
-                        pass
+                    dm.add_message(fu, b, t, own=o)
+                    if not o:
+                        try:
+                            dm.deiconify()
+                            dm.lift()
+                        except Exception:
+                            pass
             self.after(0, show_dm)
         else:
             self.after(0, lambda: self._chat.add_message(username, body, ts, own))
