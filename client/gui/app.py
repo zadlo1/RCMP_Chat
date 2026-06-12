@@ -344,6 +344,7 @@ class RCMPApp(ctk.CTk):
             on_open_dm=self._open_dm,
         )
         self._chat.pack(fill="both", expand=True)
+        self._chat.set_tls_version(self._tls_version)
 
         # Zastosuj listę znajomych jeśli przyszła przed utworzeniem GUI
         if self._pending_friends:
@@ -353,17 +354,7 @@ class RCMPApp(ctk.CTk):
 
     def _send_invite(self, room_id: int, room_name: str, username: str):
         """Wysyła zaproszenie do prywatnego pokoju."""
-        self._run_async(self.sender.send(
-            "SEND_MESSAGE", {
-                "target_type": "invite",
-                "target_id": room_id,
-                "room_name": room_name,
-                "invite_to": username,
-                "seq_id": 0,
-                "body": f"Zaproszenie do #{room_name}",
-                "hmac": "",
-            }
-        ))
+        self._run_async(self.sender.send_room_invite(room_id, room_name, username))
 
     def _join_room(self, room_id: int):
         room = self._available_rooms.get(room_id, {})
