@@ -698,7 +698,7 @@ class AddFriendDialog(ctk.CTkToplevel):
         self.on_send = on_send
 
         self.title("Dodaj znajomego")
-        self.geometry("340x200")
+        self.geometry("340x230")
         self.resizable(False, False)
         self.grab_set()
 
@@ -724,7 +724,7 @@ class AddFriendDialog(ctk.CTkToplevel):
             self, text="Wyślij zaproszenie", height=38,
             font=ctk.CTkFont(size=13, weight="bold"),
             command=self._send,
-        ).pack(fill="x", padx=32, pady=(8, 0))
+        ).pack(fill="x", padx=32, pady=(8, 20))
 
         self._entry.bind("<Return>", lambda e: self._send())
         self.after(100, lambda: self._entry.focus())
