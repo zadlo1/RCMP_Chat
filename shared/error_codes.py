@@ -17,6 +17,7 @@ class ErrorCode:
     # Błędy zasobów
     ROOM_NOT_FOUND = 4041
     USER_NOT_FOUND = 4042
+    ROOM_BANNED = 4043
 
     # Rate limiting
     SEND_RATE_LIMIT = 4291
@@ -37,6 +38,7 @@ class ErrorCode:
         4032: "Forbidden",
         4041: "Room not found",
         4042: "User not found",
+        4043: "Banned from this room",
         4291: "Send rate limit exceeded",
         5001: "Internal server error",
         5002: "Server overload",

@@ -58,6 +58,18 @@ class RCMPSender:
     async def send_leave_room(self, room_id: int) -> str:
         return await self.send("LEAVE_ROOM", {"room_id": room_id})
 
+    async def send_room_members_request(self, room_id: int) -> str:
+        return await self.send("ROOM_MEMBERS_REQUEST", {"room_id": room_id})
+
+    async def send_room_kick(self, room_id: int, user_id: int) -> str:
+        return await self.send("ROOM_KICK", {"room_id": room_id, "user_id": user_id})
+
+    async def send_room_ban(self, room_id: int, user_id: int) -> str:
+        return await self.send("ROOM_BAN", {"room_id": room_id, "user_id": user_id})
+
+    async def send_room_unban(self, room_id: int, user_id: int) -> str:
+        return await self.send("ROOM_UNBAN", {"room_id": room_id, "user_id": user_id})
+
     async def send_message(self, target_type: str, target_id: int, body: str) -> str:
         """
         Wysyła SEND_MESSAGE z obliczonym HMAC.

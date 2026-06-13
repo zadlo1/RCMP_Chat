@@ -7,6 +7,7 @@ from client.protocol.sender import RCMPSender
 from client.protocol.receiver import RCMPReceiver
 from client.gui.login_window import LoginWindow
 from client.gui.chat_window import ChatWindow
+from client.gui.widgets import MemberListItem, BannedUserItem
 from server.config import Config
 
 
@@ -39,6 +40,8 @@ class RCMPApp(ctk.CTk):
         self._tls_version: str = "TLS"
         self._user_role: str = "user"
         self._pending_rooms: list = []
+        self._members_dialog = None
+        self._members_dialog_room_id: int = None
 
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._run_loop, daemon=True)
@@ -96,6 +99,10 @@ class RCMPApp(ctk.CTk):
         self.receiver.on("MESSAGE_EXPIRE",   self._on_message_expire)
         self.receiver.on("FRIEND_REMOVE",    self._on_friend_removed)
         self.receiver.on("CREATE_ROOM_OK",   self._on_create_room_ok)
+        self.receiver.on("ROOM_MEMBERS_LIST", self._on_room_members_list)
+        self.receiver.on("ROOM_KICK_OK",      self._on_room_kick_ok)
+        self.receiver.on("ROOM_BAN_OK",       self._on_room_ban_ok)
+        self.receiver.on("ROOM_UNBAN_OK",     self._on_room_unban_ok)
 
         self._bg_tasks = [
             asyncio.create_task(self.receiver.start()),
@@ -166,15 +173,52 @@ class RCMPApp(ctk.CTk):
         event = payload.get("event")
         uname = payload.get("username", "?")
         room_name = payload.get("room_name", "")
+        room_id = payload.get("room_id")
+        by = payload.get("by", "?")
+
+        is_me = uname == self._username
 
         if event == "joined":
             text = f"{uname} dołączył do #{room_name}"
         elif event == "left":
             text = f"{uname} opuścił #{room_name}"
+        elif event == "kicked":
+            if is_me:
+                text = f"Zostałeś wyrzucony z #{room_name} przez {by}"
+            else:
+                text = f"{uname} został wyrzucony z #{room_name} przez {by}"
+        elif event == "banned":
+            if is_me:
+                text = f"Zostałeś zbanowany w #{room_name} przez {by}"
+            else:
+                text = f"{uname} został zbanowany w #{room_name} przez {by}"
+        elif event == "info":
+            text = payload.get("message", "")
         else:
             text = f"Zdarzenie: {event}"
 
-        self.after(0, lambda: self._chat.add_system_message(text))
+        def apply():
+            if is_me and event in ("kicked", "banned") and room_id is not None:
+                if self._current_room_id == room_id:
+                    self._current_room_id = None
+                    self._current_room_name = None
+                    self._chat.room_left(room_id)
+                if event == "banned":
+                    self._chat.remove_room(room_id)
+                    self._available_rooms.pop(room_id, None)
+                self._chat.add_system_message(text, room_id=room_id)
+            else:
+                self._chat.add_system_message(text, room_id=room_id)
+
+            # Odśwież listę uczestników jeśli dialog jest otwarty dla tego pokoju
+            if (event in ("kicked", "banned", "left", "joined")
+                    and room_id is not None
+                    and self._members_dialog is not None
+                    and self._members_dialog.winfo_exists()
+                    and self._members_dialog_room_id == room_id):
+                self._run_async(self.sender.send_room_members_request(room_id))
+
+        self.after(0, apply)
 
     async def _on_message_ack(self, data: dict):
         payload = data.get("payload", {})
@@ -251,6 +295,18 @@ class RCMPApp(ctk.CTk):
             self.after(0, lambda m=msg: self._show_info_popup("Nieznany użytkownik", m))
         elif code == 4001 and "already" in msg.lower():
             self.after(0, lambda m=msg: self._show_info_popup("Znajomi", m))
+        elif code == 4043:
+            # ROOM_BANNED — odrzucone JOIN_ROOM, wycofaj optymistyczne dołączenie
+            room_id = self._current_room_id
+
+            def revert(rid=room_id):
+                if rid is not None:
+                    self._chat.room_left(rid)
+                self._current_room_id = None
+                self._current_room_name = None
+            self.after(0, revert)
+            self.after(0, lambda: self._show_info_popup(
+                "Brak dostępu", "Zostałeś zbanowany w tym pokoju."))
         else:
             self.after(0, lambda: self._chat.add_system_message(f"Błąd {code}: {msg}"))
 
@@ -368,6 +424,7 @@ class RCMPApp(ctk.CTk):
             on_remove_friend=self._remove_friend,
             is_admin=(self._user_role == "admin"),
             on_create_room=self._show_create_room_dialog,
+            on_view_members=self._view_members,
         )
         self._chat.pack(fill="both", expand=True)
         self._chat.set_tls_version(self._tls_version)
@@ -436,6 +493,112 @@ class RCMPApp(ctk.CTk):
     def _send_invite(self, room_id: int, room_name: str, username: str):
         """Wysyła zaproszenie do prywatnego pokoju."""
         self._run_async(self.sender.send_room_invite(room_id, room_name, username))
+
+    # ------------------------------------------------------------------
+    # Uczestnicy pokoju i moderacja (kick / ban)
+    # ------------------------------------------------------------------
+
+    def _view_members(self, room_id: int):
+        """Otwiera/odświeża okno listy uczestników danego pokoju."""
+        self._members_dialog_room_id = room_id
+        self._run_async(self.sender.send_room_members_request(room_id))
+
+    async def _on_room_members_list(self, data: dict):
+        payload = data.get("payload", {})
+        room_id = payload.get("room_id")
+        room_name = payload.get("room_name", "")
+        is_private = payload.get("is_private", False)
+        members = payload.get("members", [])
+        banned = payload.get("banned")
+
+        def show():
+            if (self._members_dialog is not None
+                    and self._members_dialog.winfo_exists()
+                    and self._members_dialog_room_id == room_id):
+                self._members_dialog.refresh(members, banned)
+                return
+
+            if self._members_dialog is not None and self._members_dialog.winfo_exists():
+                self._members_dialog.destroy()
+
+            self._members_dialog_room_id = room_id
+            self._members_dialog = MembersDialog(
+                self,
+                room_id=room_id,
+                room_name=room_name,
+                members=members,
+                banned=banned,
+                is_admin=(self._user_role == "admin"),
+                my_username=self._username,
+                is_private=is_private,
+                on_kick=self._kick_user,
+                on_ban=self._ban_user,
+                on_unban=self._unban_user,
+                on_invite=self._send_invite if is_private else None,
+            )
+
+        self.after(0, show)
+
+    def _kick_user(self, room_id: int, user_id: int, username: str):
+        ConfirmDialog(
+            self,
+            title="Usuń z pokoju",
+            message=f"Czy na pewno chcesz usunąć {username} z tego pokoju?",
+            on_confirm=lambda: self._run_async(
+                self.sender.send_room_kick(room_id, user_id)
+            ),
+        )
+
+    def _ban_user(self, room_id: int, user_id: int, username: str):
+        ConfirmDialog(
+            self,
+            title="Zbanuj użytkownika",
+            message=(f"Czy na pewno chcesz zbanować {username}?\n"
+                     f"Nie będzie mógł ponownie dołączyć do tego pokoju."),
+            on_confirm=lambda: self._run_async(
+                self.sender.send_room_ban(room_id, user_id)
+            ),
+        )
+
+    def _unban_user(self, room_id: int, user_id: int, username: str):
+        self._run_async(self.sender.send_room_unban(room_id, user_id))
+
+    async def _on_room_kick_ok(self, data: dict):
+        payload = data.get("payload", {})
+        room_id = payload.get("room_id")
+        room_name = payload.get("room_name", "")
+        username = payload.get("username", "?")
+        self.after(0, lambda: self._chat.add_system_message(
+            f"Usunięto {username} z #{room_name}", room_id=room_id
+        ))
+        self._refresh_members_dialog(room_id)
+
+    async def _on_room_ban_ok(self, data: dict):
+        payload = data.get("payload", {})
+        room_id = payload.get("room_id")
+        room_name = payload.get("room_name", "")
+        username = payload.get("username", "?")
+        self.after(0, lambda: self._chat.add_system_message(
+            f"Zbanowano {username} w #{room_name}", room_id=room_id
+        ))
+        self._refresh_members_dialog(room_id)
+
+    async def _on_room_unban_ok(self, data: dict):
+        payload = data.get("payload", {})
+        room_id = payload.get("room_id")
+        room_name = payload.get("room_name", "")
+        username = payload.get("username", "?")
+        self.after(0, lambda: self._chat.add_system_message(
+            f"Odbanowano {username} w #{room_name}", room_id=room_id
+        ))
+        self._refresh_members_dialog(room_id)
+
+    def _refresh_members_dialog(self, room_id: int):
+        """Odpytuje serwer o aktualną listę uczestników, jeśli okno jest otwarte."""
+        if (self._members_dialog is not None
+                and self._members_dialog.winfo_exists()
+                and self._members_dialog_room_id == room_id):
+            self._run_async(self.sender.send_room_members_request(room_id))
 
     def _join_room(self, room_id: int):
         room = self._available_rooms.get(room_id, {})
@@ -711,6 +874,121 @@ class SendInviteDialog(ctk.CTkToplevel):
             return
         self.on_send(self.room_id, self.room_name, username)
         self.destroy()
+
+
+class MembersDialog(ctk.CTkToplevel):
+    """
+    Okno listy uczestników pokoju.
+
+    Widoczne dla wszystkich — pokazuje kto jest aktualnie w pokoju.
+    Admin ma dodatkowo: przycisk zapraszania (pokoje prywatne),
+    możliwość usunięcia (kick) i zbanowania użytkownika,
+    oraz listę zbanowanych z opcją odbanowania.
+    """
+
+    def __init__(self, parent, room_id: int, room_name: str, members: list,
+                 banned: list = None, is_admin: bool = False,
+                 my_username: str = None, is_private: bool = False,
+                 on_kick=None, on_ban=None, on_unban=None, on_invite=None):
+        super().__init__(parent)
+        self.room_id = room_id
+        self.room_name = room_name
+        self.is_admin = is_admin
+        self.my_username = my_username
+        self.is_private = is_private
+        self.on_kick = on_kick
+        self.on_ban = on_ban
+        self.on_unban = on_unban
+        self.on_invite = on_invite
+
+        self.title(f"Uczestnicy — #{room_name}")
+        self.geometry("360x480")
+        self.minsize(320, 360)
+
+        ctk.CTkLabel(self, text=f"👥  #{room_name}",
+                     font=ctk.CTkFont(size=16, weight="bold")).pack(pady=(20, 2))
+
+        self._count_label = ctk.CTkLabel(
+            self, text="", font=ctk.CTkFont(size=11), text_color="#888888")
+        self._count_label.pack(pady=(0, 8))
+
+        if self.is_admin and self.is_private and self.on_invite:
+            ctk.CTkButton(
+                self, text="✉  Zaproś użytkownika", height=32,
+                font=ctk.CTkFont(size=12),
+                fg_color="#3B3FA6", hover_color="#5558CC",
+                command=self._invite,
+            ).pack(fill="x", padx=20, pady=(0, 10))
+
+        self._members_frame = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        self._members_frame.pack(fill="both", expand=True, padx=12, pady=(0, 16))
+
+        self.refresh(members, banned)
+
+    def _invite(self):
+        if self.on_invite:
+            SendInviteDialog(self, self.room_id, self.room_name, self.on_invite)
+
+    def refresh(self, members: list, banned: list = None):
+        """Przebudowuje listę uczestników (i zbanowanych dla admina)."""
+        for widget in self._members_frame.winfo_children():
+            widget.destroy()
+
+        self._count_label.configure(text=f"{len(members)} użytkowników w pokoju")
+
+        if not members:
+            ctk.CTkLabel(self._members_frame, text="Brak uczestników",
+                         font=ctk.CTkFont(size=11),
+                         text_color="#555555").pack(pady=8)
+
+        for m in members:
+            username = m.get("username", "?")
+            role = m.get("role", "user")
+            status = m.get("status", "online")
+            user_id = m.get("user_id")
+            is_self = username == self.my_username
+
+            can_moderate = (
+                self.is_admin and not is_self and role != "admin"
+                and self.on_kick is not None and self.on_ban is not None
+            )
+
+            item = MemberListItem(
+                self._members_frame,
+                username=username,
+                status=status,
+                role=role,
+                is_self=is_self,
+                can_moderate=can_moderate,
+                on_kick=(lambda rid=self.room_id, uid=user_id, uname=username:
+                         self.on_kick(rid, uid, uname)) if can_moderate else None,
+                on_ban=(lambda rid=self.room_id, uid=user_id, uname=username:
+                        self.on_ban(rid, uid, uname)) if can_moderate else None,
+            )
+            item.pack(fill="x", pady=1)
+
+        # Sekcja zbanowanych — widoczna tylko dla admina
+        if self.is_admin and banned is not None:
+            ctk.CTkLabel(
+                self._members_frame, text="ZBANOWANI",
+                font=ctk.CTkFont(size=10), text_color="#888888",
+            ).pack(anchor="w", padx=4, pady=(14, 2))
+
+            if not banned:
+                ctk.CTkLabel(self._members_frame, text="Brak zbanowanych",
+                             font=ctk.CTkFont(size=11),
+                             text_color="#555555").pack(pady=4)
+            else:
+                for b in banned:
+                    b_username = b.get("username", "?")
+                    b_user_id = b.get("user_id")
+                    item = BannedUserItem(
+                        self._members_frame,
+                        username=b_username,
+                        on_unban=(lambda rid=self.room_id, uid=b_user_id, uname=b_username:
+                                  self.on_unban(rid, uid, uname)) if self.on_unban else None,
+                    )
+                    item.pack(fill="x", pady=1)
 
 
 class FriendRequestDialog(ctk.CTkToplevel):

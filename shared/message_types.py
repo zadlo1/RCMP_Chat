@@ -41,6 +41,16 @@ class MessageType:
     FRIENDS_LIST          = "FRIENDS_LIST"
     DIRECT_MESSAGE        = "DIRECT_MESSAGE"
 
+    # Lista uczestników pokoju i moderacja (kick/ban)
+    ROOM_MEMBERS_REQUEST  = "ROOM_MEMBERS_REQUEST"
+    ROOM_MEMBERS_LIST     = "ROOM_MEMBERS_LIST"
+    ROOM_KICK             = "ROOM_KICK"
+    ROOM_BAN              = "ROOM_BAN"
+    ROOM_UNBAN            = "ROOM_UNBAN"
+    ROOM_BAN_OK           = "ROOM_BAN_OK"
+    ROOM_UNBAN_OK         = "ROOM_UNBAN_OK"
+    ROOM_KICK_OK          = "ROOM_KICK_OK"
+
     ALL = {
         "LOGIN", "JOIN_ROOM", "LEAVE_ROOM", "SEND_MESSAGE", "MESSAGE_ACK",
         "STATUS", "PING", "BYE", "LOGIN_OK", "LOGIN_ERR", "ROOM_EVENT",
@@ -52,6 +62,9 @@ class MessageType:
         "FRIEND_REMOVE",
         "CREATE_ROOM", "CREATE_ROOM_OK",
         "DELETE_ROOM", "DELETE_ROOM_OK",
+        "ROOM_MEMBERS_REQUEST", "ROOM_MEMBERS_LIST",
+        "ROOM_KICK", "ROOM_BAN", "ROOM_UNBAN",
+        "ROOM_BAN_OK", "ROOM_UNBAN_OK", "ROOM_KICK_OK",
     }
 
     # Typy które nie wymagają tokenu sesji

@@ -7,7 +7,8 @@ class ChatWindow(ctk.CTkFrame):
 
     def __init__(self, parent, username: str, on_send, on_join_room,
                  on_leave_room, on_add_friend=None, on_open_dm=None,
-                 on_remove_friend=None, is_admin=False, on_create_room=None, **kwargs):
+                 on_remove_friend=None, is_admin=False, on_create_room=None,
+                 on_view_members=None, **kwargs):
         super().__init__(parent, corner_radius=0, **kwargs)
 
         self.username = username
@@ -19,6 +20,7 @@ class ChatWindow(ctk.CTkFrame):
         self.on_remove_friend = on_remove_friend
         self.is_admin = is_admin
         self.on_create_room = on_create_room
+        self.on_view_members = on_view_members
         self._friend_items: dict[str, object] = {}
 
         self._current_room_id = None
@@ -125,6 +127,14 @@ class ChatWindow(ctk.CTkFrame):
         self._leave_btn.pack(side="right", padx=10)
         self._leave_btn.pack_forget()
 
+        self._members_btn = ctk.CTkButton(
+            self._chat_header, text="👥 Uczestnicy", width=110, height=28,
+            fg_color="#555555", hover_color="#3B3FA6",
+            font=ctk.CTkFont(size=12),
+            command=self._view_members)
+        self._members_btn.pack(side="right", padx=(10, 0))
+        self._members_btn.pack_forget()
+
         # Obszar wiadomości — stack: placeholder + scrollable
         self._content_frame = ctk.CTkFrame(self._chat_area, fg_color="transparent")
         self._content_frame.pack(fill="both", expand=True)
@@ -198,6 +208,13 @@ class ChatWindow(ctk.CTkFrame):
         item.pack(fill="x", pady=1)
         self._room_items[room_id] = item
 
+    def remove_room(self, room_id: int):
+        """Usuwa pokój z listy w sidebarze (np. po zbanowaniu)."""
+        item = self._room_items.pop(room_id, None)
+        if item:
+            item.destroy()
+        self._room_histories.pop(room_id, None)
+
     def _join_room(self, room_id: int):
         if room_id == self._current_room_id:
             return
@@ -209,11 +226,16 @@ class ChatWindow(ctk.CTkFrame):
         if self._current_room_id:
             self.on_leave_room(self._current_room_id)
 
+    def _view_members(self):
+        if self._current_room_id is not None and self.on_view_members:
+            self.on_view_members(self._current_room_id)
+
     def set_active_room(self, room_id: int, room_name: str):
         self._current_room_id = room_id
         self._current_room_name = room_name
         self._room_label.configure(text=f"# {room_name}")
         self._leave_btn.pack(side="right", padx=10)
+        self._members_btn.pack(side="right", padx=(10, 0))
 
         # Ukryj placeholder, pokaż wiadomości
         self._placeholder.place_forget()
@@ -231,6 +253,7 @@ class ChatWindow(ctk.CTkFrame):
         self._current_room_name = None
         self._room_label.configure(text="Brak pokoju")
         self._leave_btn.pack_forget()
+        self._members_btn.pack_forget()
 
         # Pokaż placeholder, ukryj wiadomości
         self._messages_frame.pack_forget()

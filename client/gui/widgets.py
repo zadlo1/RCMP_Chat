@@ -223,3 +223,80 @@ class FriendListItem(ctk.CTkFrame):
             event.widget.tk.call("break")
         if self._on_remove:
             self._on_remove(self._username)
+
+
+class MemberListItem(ctk.CTkFrame):
+    """Element listy uczestników pokoju (widoczny dla wszystkich)."""
+
+    STATUS_COLORS = {
+        "online":  "#1D9E75",
+        "away":    "#EF9F27",
+        "offline": "#888888",
+    }
+
+    def __init__(self, parent, username: str, status: str = "online",
+                 role: str = "user", is_self: bool = False,
+                 can_moderate: bool = False,
+                 on_kick=None, on_ban=None, **kwargs):
+        super().__init__(parent, fg_color="transparent", **kwargs)
+
+        dot_color = self.STATUS_COLORS.get(status, "#888888")
+        dot = ctk.CTkLabel(self, text="●", font=ctk.CTkFont(size=10),
+                           text_color=dot_color, width=16)
+        dot.pack(side="left", padx=(8, 2), pady=4)
+
+        label_text = username + ("  (Ty)" if is_self else "")
+        label = ctk.CTkLabel(
+            self, text=label_text,
+            font=ctk.CTkFont(size=13),
+            anchor="w",
+        )
+        label.pack(side="left", fill="x", expand=True, pady=4)
+
+        if role == "admin":
+            ctk.CTkLabel(
+                self, text="ADMIN",
+                font=ctk.CTkFont(size=9, weight="bold"),
+                text_color="#3B3FA6",
+            ).pack(side="right", padx=(0, 8))
+
+        if can_moderate:
+            if on_ban:
+                ban_btn = ctk.CTkButton(
+                    self, text="Zbanuj", width=56, height=22,
+                    font=ctk.CTkFont(size=10),
+                    fg_color="#8B2222", hover_color="#CC4444",
+                    command=lambda: on_ban(),
+                )
+                ban_btn.pack(side="right", padx=(4, 6))
+
+            if on_kick:
+                kick_btn = ctk.CTkButton(
+                    self, text="Usuń", width=50, height=22,
+                    font=ctk.CTkFont(size=10),
+                    fg_color="#555555", hover_color="#CC8844",
+                    command=lambda: on_kick(),
+                )
+                kick_btn.pack(side="right", padx=(4, 0))
+
+
+class BannedUserItem(ctk.CTkFrame):
+    """Element listy zbanowanych użytkowników (widoczny tylko dla admina)."""
+
+    def __init__(self, parent, username: str, on_unban=None, **kwargs):
+        super().__init__(parent, fg_color="transparent", **kwargs)
+
+        ctk.CTkLabel(
+            self, text=f"🚫  {username}",
+            font=ctk.CTkFont(size=13),
+            text_color="#AAAAAA",
+            anchor="w",
+        ).pack(side="left", fill="x", expand=True, padx=(8, 0), pady=4)
+
+        if on_unban:
+            ctk.CTkButton(
+                self, text="Odbanuj", width=64, height=22,
+                font=ctk.CTkFont(size=10),
+                fg_color="#555555", hover_color="#1D9E75",
+                command=lambda: on_unban(),
+            ).pack(side="right", padx=(4, 6))

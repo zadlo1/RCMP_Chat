@@ -32,9 +32,13 @@ class RoomManager:
     async def check_access(self, room_id: int, user_id: int) -> bool:
         """
         Sprawdza czy użytkownik ma dostęp do pokoju.
-        Pokoje publiczne — zawsze True.
+        Zbanowani użytkownicy — zawsze False.
+        Pokoje publiczne — zawsze True (jeśli nie zbanowani).
         Pokoje prywatne — tylko jeśli user_id jest na liście ACL.
         """
+        if await self.is_banned(room_id, user_id):
+            return False
+
         room = await self.get_room(room_id)
         if room is None:
             return False
@@ -45,6 +49,55 @@ class RoomManager:
             room_id, user_id
         )
         return row is not None
+
+    # ------------------------------------------------------------------
+    # Banowanie użytkowników
+    # ------------------------------------------------------------------
+
+    async def is_banned(self, room_id: int, user_id: int) -> bool:
+        """Sprawdza czy użytkownik jest zbanowany w danym pokoju."""
+        rows = await self.db.fetch(
+            "SELECT 1 FROM room_bans WHERE room_id = $1 AND user_id = $2",
+            room_id, user_id
+        )
+        return len(rows) > 0
+
+    async def ban_user(self, room_id: int, user_id: int, banned_by: int):
+        """Banuje użytkownika w pokoju — usuwa z ACL i blokuje dołączanie."""
+        await self.db.execute(
+            """
+            INSERT INTO room_bans (room_id, user_id, banned_by)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (room_id, user_id) DO NOTHING
+            """,
+            room_id, user_id, banned_by
+        )
+        await self.db.execute(
+            "DELETE FROM room_acl WHERE room_id = $1 AND user_id = $2",
+            room_id, user_id
+        )
+        self.leave_room(room_id, user_id)
+
+    async def unban_user(self, room_id: int, user_id: int):
+        """Usuwa bana użytkownika z pokoju."""
+        await self.db.execute(
+            "DELETE FROM room_bans WHERE room_id = $1 AND user_id = $2",
+            room_id, user_id
+        )
+
+    async def list_banned(self, room_id: int) -> list[dict]:
+        """Zwraca listę zbanowanych użytkowników w pokoju."""
+        rows = await self.db.fetch(
+            """
+            SELECT u.id AS user_id, u.username
+            FROM room_bans b
+            JOIN users u ON u.id = b.user_id
+            WHERE b.room_id = $1
+            ORDER BY u.username
+            """,
+            room_id
+        )
+        return [dict(r) for r in rows]
 
     # ------------------------------------------------------------------
     # Dołączanie i opuszczanie pokoju

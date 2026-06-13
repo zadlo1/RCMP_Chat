@@ -39,6 +39,17 @@ CREATE TABLE IF NOT EXISTS room_acl (
 );
 
 -- ============================================================
+-- Banowanie użytkowników w pokojach (blokada ponownego dołączenia)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS room_bans (
+    room_id     INTEGER NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    banned_by   INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    banned_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (room_id, user_id)
+);
+
+-- ============================================================
 -- Historia wiadomości
 -- ============================================================
 CREATE TABLE IF NOT EXISTS messages (
@@ -81,6 +92,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_sender  ON messages(sender_id);
 CREATE INDEX IF NOT EXISTS idx_messages_msg_id  ON messages(msg_id);
 CREATE INDEX IF NOT EXISTS idx_nonces_used_at   ON used_nonces(used_at);
 CREATE INDEX IF NOT EXISTS idx_logs_event       ON system_logs(event, logged_at);
+CREATE INDEX IF NOT EXISTS idx_room_bans_room   ON room_bans(room_id);
 
 -- ============================================================
 -- Domyślne pokoje publiczne
