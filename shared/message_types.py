@@ -32,6 +32,10 @@ class MessageType:
     FRIEND_REQUEST_DECLINE= "FRIEND_REQUEST_DECLINE"
     FRIEND_STATUS_UPDATE  = "FRIEND_STATUS_UPDATE"
     FRIEND_REMOVE         = "FRIEND_REMOVE"
+
+    # Zarządzanie pokojami (admin)
+    CREATE_ROOM           = "CREATE_ROOM"
+    CREATE_ROOM_OK        = "CREATE_ROOM_OK"
     FRIENDS_LIST          = "FRIENDS_LIST"
     DIRECT_MESSAGE        = "DIRECT_MESSAGE"
 
@@ -44,6 +48,7 @@ class MessageType:
         "FRIEND_REQUEST", "FRIEND_REQUEST_ACCEPT", "FRIEND_REQUEST_DECLINE",
         "FRIEND_STATUS_UPDATE", "FRIENDS_LIST", "DIRECT_MESSAGE",
         "FRIEND_REMOVE",
+        "CREATE_ROOM", "CREATE_ROOM_OK",
     }
 
     # Typy które nie wymagają tokenu sesji

@@ -138,13 +138,13 @@ class StatusBar(ctk.CTkFrame):
                                        text_color="#AAAAAA")
         self._tls_label.pack(side="left", padx=8)
 
-    def set_tls_version(self, version: str):
-        self._tls_label.configure(text=f"🔒 {version}")
-
         self._jwt_label = ctk.CTkLabel(self, text="",
                                        font=ctk.CTkFont(size=11),
                                        text_color="#AAAAAA")
         self._jwt_label.pack(side="right", padx=12)
+
+    def set_tls_version(self, version: str):
+        self._tls_label.configure(text=f"🔒 {version}")
 
     def set_connected(self, connected: bool):
         if connected:

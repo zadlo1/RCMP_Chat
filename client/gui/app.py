@@ -35,6 +35,10 @@ class RCMPApp(ctk.CTk):
         self._bg_tasks: list = []
         self._dm_windows: dict[str, object] = {}  # {username: DMWindow}
         self._pending_friends: list = []  # Lista znajomych otrzymana przed utworzeniem GUI
+        self._friends_cache: list = []
+        self._tls_version: str = "TLS"
+        self._user_role: str = "user"
+        self._pending_rooms: list = []
 
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._run_loop, daemon=True)
@@ -89,6 +93,9 @@ class RCMPApp(ctk.CTk):
         self.receiver.on("FRIEND_STATUS_UPDATE",  self._on_friend_status_update)
         self.receiver.on("ERROR",           self._on_error)
         self.receiver.on("BYE_ACK",         self._on_bye_ack)
+        self.receiver.on("MESSAGE_EXPIRE",   self._on_message_expire)
+        self.receiver.on("FRIEND_REMOVE",    self._on_friend_removed)
+        self.receiver.on("CREATE_ROOM_OK",   self._on_create_room_ok)
 
         self._bg_tasks = [
             asyncio.create_task(self.receiver.start()),
@@ -108,6 +115,8 @@ class RCMPApp(ctk.CTk):
         self.sender.token = payload.get("session_token")
         self.sender.hmac_secret = payload.get("hmac_secret")
         self._jwt_exp = payload.get("expires_in", 3600)
+        self._tls_version = self.conn.get_tls_version()
+        self._user_role = payload.get("role", "user")
         # Wyczyść stare pending ACKs z poprzedniej sesji (stary HMAC secret!)
         self.sender._pending_acks.clear()
         self.sender._seq_id = 0
@@ -187,9 +196,10 @@ class RCMPApp(ctk.CTk):
             r["id"]: {"name": r["name"], "is_private": r["is_private"]}
             for r in rooms
         }
-        # Dodaj do sidebara tylko pokoje do których user ma dostęp
-        for r in rooms:
-            if r.get("has_access", True):
+        self._pending_rooms = [r for r in rooms if r.get("has_access", True)]
+        # Jeśli chat już istnieje — dodaj od razu, jeśli nie — doda _show_chat
+        if self._chat:
+            for r in self._pending_rooms:
                 self.after(0, lambda room=r: self._chat.add_room(
                     room["id"], room["name"], room["is_private"]
                 ))
@@ -273,6 +283,7 @@ class RCMPApp(ctk.CTk):
     async def _on_friends_list(self, data: dict):
         payload = data.get("payload", {})
         friends = payload.get("friends", [])
+        self._friends_cache = friends
         print(f"[APP] Otrzymano FRIENDS_LIST: {len(friends)} znajomych, _chat={self._chat is not None}")
         for f in friends:
             print(f"  - {f['username']}: {f.get('friendship_status')}, {f.get('status')}")
@@ -305,6 +316,18 @@ class RCMPApp(ctk.CTk):
         self.after(0, lambda: FriendRequestDialog(
             self, from_user, on_accept=accept, on_decline=decline
         ))
+
+    async def _on_message_expire(self, data: dict):
+        payload = data.get("payload", {})
+        msg_id = payload.get("msg_id")
+        expire_in = payload.get("expire_in_seconds", 60)
+
+        def schedule_expire(mid=msg_id, delay=expire_in):
+            for dm_win in self._dm_windows.values():
+                self.after(delay * 1000, lambda m=mid, w=dm_win: w.expire_message(m)
+                           if w.winfo_exists() else None)
+
+        self.after(0, schedule_expire)
 
     async def _on_friend_request_accepted(self, data: dict):
         payload = data.get("payload", {})
@@ -343,15 +366,48 @@ class RCMPApp(ctk.CTk):
             on_add_friend=self._show_add_friend_dialog,
             on_open_dm=self._open_dm,
             on_remove_friend=self._remove_friend,
+            is_admin=(self._user_role == "admin"),
+            on_create_room=self._show_create_room_dialog,
         )
         self._chat.pack(fill="both", expand=True)
         self._chat.set_tls_version(self._tls_version)
+
+        # Załaduj pokoje z cache (mogły przyjść przed GUI)
+        for r in self._pending_rooms:
+            self._chat.add_room(r["id"], r["name"], r["is_private"])
+
+        # Załaduj znajomych z cache
+        if self._pending_friends:
+            self._chat.set_friends(self._pending_friends)
+            self._pending_friends = []
 
         # Zastosuj listę znajomych jeśli przyszła przed utworzeniem GUI
         if self._pending_friends:
             print(f"[APP] Stosowanie odłożonej listy {len(self._pending_friends)} znajomych")
             self._chat.set_friends(self._pending_friends)
             self._pending_friends = []
+
+    async def _on_create_room_ok(self, data: dict):
+        payload = data.get("payload", {})
+        room_id = payload.get("id")
+        room_name = payload.get("name", "")
+        is_private = payload.get("is_private", False)
+        self._available_rooms[room_id] = {"name": room_name, "is_private": is_private}
+
+        def add_to_gui(rid=room_id, rname=room_name, rpriv=is_private):
+            if self._chat:
+                self._chat.add_room(rid, rname, rpriv)
+                self._chat.add_system_message(f"Pokój #{rname} został utworzony")
+
+        self.after(0, add_to_gui)
+
+    def _show_create_room_dialog(self):
+        CreateRoomDialog(self, on_create=self._create_room)
+
+    def _create_room(self, name: str, is_private: bool):
+        self._run_async(self.sender.send(
+            "CREATE_ROOM", {"name": name, "is_private": is_private}
+        ))
 
     def _remove_friend(self, username: str):
         """Wysyła żądanie usunięcia znajomego z potwierdzeniem."""
@@ -873,4 +929,59 @@ class ConfirmDialog(ctk.CTkToplevel):
 
     def _confirm(self):
         self.on_confirm()
+        self.destroy()
+
+
+class CreateRoomDialog(ctk.CTkToplevel):
+    """Okno tworzenia nowego pokoju (tylko admin)."""
+
+    def __init__(self, parent, on_create):
+        super().__init__(parent)
+        self.on_create = on_create
+
+        self.title("Utwórz pokój")
+        self.geometry("340x240")
+        self.resizable(False, False)
+        self.grab_set()
+
+        ctk.CTkLabel(self, text="Nowy pokój",
+                     font=ctk.CTkFont(size=16, weight="bold")).pack(pady=(24, 4))
+
+        ctk.CTkLabel(self, text="Nazwa pokoju:",
+                     font=ctk.CTkFont(size=12),
+                     text_color="#AAAAAA").pack(pady=(8, 4))
+
+        self._entry = ctk.CTkEntry(self, placeholder_text="np. off-topic",
+                                   height=38, font=ctk.CTkFont(size=13))
+        self._entry.pack(fill="x", padx=32, pady=(0, 8))
+
+        self._private_var = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(
+            self, text="Pokój prywatny",
+            variable=self._private_var,
+            font=ctk.CTkFont(size=12),
+        ).pack(pady=(0, 4))
+
+        self._error = ctk.CTkLabel(self, text="", text_color="#CC4444",
+                                   font=ctk.CTkFont(size=11))
+        self._error.pack()
+
+        ctk.CTkButton(
+            self, text="Utwórz", height=38,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            command=self._create,
+        ).pack(fill="x", padx=32, pady=(8, 20))
+
+        self._entry.bind("<Return>", lambda e: self._create())
+        self.after(100, self._entry.focus)
+
+    def _create(self):
+        name = self._entry.get().strip()
+        if not name:
+            self._error.configure(text="Podaj nazwę pokoju.")
+            return
+        if len(name) > 64:
+            self._error.configure(text="Nazwa za długa (max 64 znaki).")
+            return
+        self.on_create(name, self._private_var.get())
         self.destroy()
