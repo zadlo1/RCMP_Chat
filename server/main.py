@@ -58,6 +58,9 @@ class RCMPServer:
         self.auth = AuthManager(self.db_pool)
         self.room_manager = RoomManager(self.db_pool)
 
+        # Automatyczna migracja — utwórz brakujące tabele jeśli nie istnieją
+        await self._run_migrations()
+
         # Reset statusów — przy starcie serwera wszyscy są offline
         await self.db_pool.execute("UPDATE users SET status = 'offline'")
         print("[RCMP] Statusy użytkowników zresetowane do offline")
@@ -79,6 +82,52 @@ class RCMPServer:
 
         async with server:
             await server.serve_forever()
+
+    async def _run_migrations(self):
+        """Tworzy brakujące tabele jeśli nie istnieją (bezpieczna migracja)."""
+        migrations = [
+            (
+                "room_bans",
+                """
+                CREATE TABLE IF NOT EXISTS room_bans (
+                    room_id     INTEGER NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+                    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    banned_by   INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                    banned_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (room_id, user_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_room_bans_room ON room_bans(room_id);
+                """
+            ),
+            (
+                "friendships",
+                """
+                CREATE TABLE IF NOT EXISTS friendships (
+                    id          SERIAL PRIMARY KEY,
+                    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    friend_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    status      VARCHAR(16) NOT NULL DEFAULT 'pending',
+                    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (user_id, friend_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_friendships_user   ON friendships(user_id, status);
+                CREATE INDEX IF NOT EXISTS idx_friendships_friend ON friendships(friend_id, status);
+                """
+            ),
+        ]
+        for table_name, sql in migrations:
+            exists = await self.db_pool.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM information_schema.tables "
+                "WHERE table_schema='public' AND table_name=$1)",
+                table_name
+            )
+            if not exists:
+                await self.db_pool.execute(sql)
+                print(f"[RCMP] Migracja: utworzono tabelę '{table_name}'")
+            else:
+                # Upewnij się że indeksy też istnieją (idempotentne)
+                await self.db_pool.execute(sql)
 
     def _build_ssl_context(self) -> ssl.SSLContext:
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -199,7 +248,17 @@ class RCMPServer:
                 return False
 
         # Dispatch do odpowiedniego handlera
-        await self._dispatch(msg_type, data, session, writer)
+        try:
+            await self._dispatch(msg_type, data, session, writer)
+        except Exception as e:
+            print(f"[RCMP] Błąd handlera '{msg_type}' dla {session.ip}: {e}")
+            try:
+                await self.router.send_error(
+                    writer, ErrorCode.SERVER_ERROR,
+                    "Błąd wewnętrzny serwera", data.get("msg_id")
+                )
+            except Exception:
+                pass
 
         # Jeśli handler zamknął sesję
         if session.state in ("CLOSING", "CLOSED"):

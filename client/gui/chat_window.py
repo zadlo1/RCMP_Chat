@@ -120,8 +120,8 @@ class ChatWindow(ctk.CTkFrame):
         self._room_label.pack(side="left", padx=14)
 
         self._leave_btn = ctk.CTkButton(
-            self._chat_header, text="Opuść", width=70, height=28,
-            fg_color="#555555", hover_color="#CC4444",
+            self._chat_header, text="Zamknij widok", width=110, height=28,
+            fg_color="#444444", hover_color="#555555",
             font=ctk.CTkFont(size=12),
             command=self._leave_current_room)
         self._leave_btn.pack(side="right", padx=10)

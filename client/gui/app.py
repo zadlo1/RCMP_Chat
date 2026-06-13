@@ -150,10 +150,10 @@ class RCMPApp(ctk.CTk):
             dm_key = from_user if from_user != self._username else payload.get("target_username", from_user)
             is_own = from_user == self._username
 
-            def show_dm(u=dm_key, b=body, t=ts, o=is_own, fu=from_user):
-                if u not in self._dm_windows:
-                    self._open_dm(u)
-                dm = self._dm_windows.get(u)
+            def show_dm(u=dm_key, b=body, t=ts, o=is_own, fu=from_user, _app=self):
+                if u not in _app._dm_windows:
+                    _app._open_dm(u)
+                dm = _app._dm_windows.get(u)
                 if dm:
                     dm.add_message(fu, b, t, own=o)
                     if not o:
@@ -162,7 +162,7 @@ class RCMPApp(ctk.CTk):
                             dm.lift()
                         except Exception:
                             pass
-            self.after(0, show_dm)
+            self.after(0, lambda: show_dm())
         else:
             self.after(0, lambda: self._chat.add_message(username, body, ts, own))
 
@@ -197,28 +197,28 @@ class RCMPApp(ctk.CTk):
         else:
             text = f"Zdarzenie: {event}"
 
-        def apply():
+        def apply(_app=self):
             if is_me and event in ("kicked", "banned") and room_id is not None:
-                if self._current_room_id == room_id:
-                    self._current_room_id = None
-                    self._current_room_name = None
-                    self._chat.room_left(room_id)
+                if _app._current_room_id == room_id:
+                    _app._current_room_id = None
+                    _app._current_room_name = None
+                    _app._chat.room_left(room_id)
                 if event == "banned":
-                    self._chat.remove_room(room_id)
-                    self._available_rooms.pop(room_id, None)
-                self._chat.add_system_message(text, room_id=room_id)
+                    _app._chat.remove_room(room_id)
+                    _app._available_rooms.pop(room_id, None)
+                _app._chat.add_system_message(text, room_id=room_id)
             else:
-                self._chat.add_system_message(text, room_id=room_id)
+                _app._chat.add_system_message(text, room_id=room_id)
 
             # Odśwież listę uczestników jeśli dialog jest otwarty dla tego pokoju
             if (event in ("kicked", "banned", "left", "joined")
                     and room_id is not None
-                    and self._members_dialog is not None
-                    and self._members_dialog.winfo_exists()
-                    and self._members_dialog_room_id == room_id):
-                self._run_async(self.sender.send_room_members_request(room_id))
+                    and _app._members_dialog is not None
+                    and _app._members_dialog.winfo_exists()
+                    and _app._members_dialog_room_id == room_id):
+                _app._run_async(_app.sender.send_room_members_request(room_id))
 
-        self.after(0, apply)
+        self.after(0, lambda: apply())
 
     async def _on_message_ack(self, data: dict):
         payload = data.get("payload", {})
@@ -254,18 +254,17 @@ class RCMPApp(ctk.CTk):
         room_name = payload.get("room_name", "?")
         invited_by = payload.get("invited_by", "?")
 
-        def accept():
-            self._run_async(self.sender.send(
+        def accept(_app=self):
+            _app._run_async(_app.sender.send(
                 "ROOM_INVITE_ACCEPT", {"room_id": room_id}
             ))
-            # Dodaj pokój do listy i dołącz
-            self._available_rooms[room_id] = {
+            _app._available_rooms[room_id] = {
                 "name": room_name, "is_private": True
             }
-            self._join_room(room_id)
+            _app._join_room(room_id)
 
-        def decline():
-            self._run_async(self.sender.send(
+        def decline(_app=self):
+            _app._run_async(_app.sender.send(
                 "ROOM_INVITE_DECLINE", {"room_id": room_id}
             ))
 
@@ -299,12 +298,12 @@ class RCMPApp(ctk.CTk):
             # ROOM_BANNED — odrzucone JOIN_ROOM, wycofaj optymistyczne dołączenie
             room_id = self._current_room_id
 
-            def revert(rid=room_id):
+            def revert(rid=room_id, _app=self):
                 if rid is not None:
-                    self._chat.room_left(rid)
-                self._current_room_id = None
-                self._current_room_name = None
-            self.after(0, revert)
+                    _app._chat.room_left(rid)
+                _app._current_room_id = None
+                _app._current_room_name = None
+            self.after(0, lambda: revert())
             self.after(0, lambda: self._show_info_popup(
                 "Brak dostępu", "Zostałeś zbanowany w tym pokoju."))
         else:
@@ -344,28 +343,28 @@ class RCMPApp(ctk.CTk):
         for f in friends:
             print(f"  - {f['username']}: {f.get('friendship_status')}, {f.get('status')}")
 
-        def update_friends():
-            if self._chat:
+        def update_friends(_app=self):
+            if _app._chat:
                 print(f"[APP] Wywołuję _chat.set_friends z {len(friends)} znajomymi")
-                self._chat.set_friends(friends)
+                _app._chat.set_friends(friends)
             else:
                 print("[APP] _chat jeszcze nie istnieje, zapisuję do _pending_friends")
-                self._pending_friends = friends
+                _app._pending_friends = friends
 
-        self.after(0, update_friends)
+        self.after(0, lambda: update_friends())
 
     async def _on_friend_request_incoming(self, data: dict):
         payload = data.get("payload", {})
         from_user = payload.get("from_user", "?")
         from_user_id = payload.get("from_user_id")
 
-        def accept():
-            self._run_async(self.sender.send(
+        def accept(_app=self):
+            _app._run_async(_app.sender.send(
                 "FRIEND_REQUEST_ACCEPT", {"from_user_id": from_user_id}
             ))
 
-        def decline():
-            self._run_async(self.sender.send(
+        def decline(_app=self):
+            _app._run_async(_app.sender.send(
                 "FRIEND_REQUEST_DECLINE", {"from_user_id": from_user_id}
             ))
 
@@ -378,12 +377,12 @@ class RCMPApp(ctk.CTk):
         msg_id = payload.get("msg_id")
         expire_in = payload.get("expire_in_seconds", 60)
 
-        def schedule_expire(mid=msg_id, delay=expire_in):
-            for dm_win in self._dm_windows.values():
-                self.after(delay * 1000, lambda m=mid, w=dm_win: w.expire_message(m)
+        def schedule_expire(mid=msg_id, delay=expire_in, _app=self):
+            for dm_win in _app._dm_windows.values():
+                _app.after(delay * 1000, lambda m=mid, w=dm_win: w.expire_message(m)
                            if w.winfo_exists() else None)
 
-        self.after(0, schedule_expire)
+        self.after(0, lambda: schedule_expire())
 
     async def _on_friend_request_accepted(self, data: dict):
         payload = data.get("payload", {})
@@ -438,12 +437,6 @@ class RCMPApp(ctk.CTk):
             self._chat.set_friends(self._pending_friends)
             self._pending_friends = []
 
-        # Zastosuj listę znajomych jeśli przyszła przed utworzeniem GUI
-        if self._pending_friends:
-            print(f"[APP] Stosowanie odłożonej listy {len(self._pending_friends)} znajomych")
-            self._chat.set_friends(self._pending_friends)
-            self._pending_friends = []
-
     async def _on_create_room_ok(self, data: dict):
         payload = data.get("payload", {})
         room_id = payload.get("id")
@@ -451,12 +444,12 @@ class RCMPApp(ctk.CTk):
         is_private = payload.get("is_private", False)
         self._available_rooms[room_id] = {"name": room_name, "is_private": is_private}
 
-        def add_to_gui(rid=room_id, rname=room_name, rpriv=is_private):
-            if self._chat:
-                self._chat.add_room(rid, rname, rpriv)
-                self._chat.add_system_message(f"Pokój #{rname} został utworzony")
+        def add_to_gui(rid=room_id, rname=room_name, rpriv=is_private, _app=self):
+            if _app._chat:
+                _app._chat.add_room(rid, rname, rpriv)
+                _app._chat.add_system_message(f"Pokój #{rname} został utworzony")
 
-        self.after(0, add_to_gui)
+        self.after(0, lambda: add_to_gui())
 
     def _show_create_room_dialog(self):
         CreateRoomDialog(self, on_create=self._create_room)
@@ -511,33 +504,69 @@ class RCMPApp(ctk.CTk):
         members = payload.get("members", [])
         banned = payload.get("banned")
 
+        _app = self
+
         def show():
-            if (self._members_dialog is not None
-                    and self._members_dialog.winfo_exists()
-                    and self._members_dialog_room_id == room_id):
-                self._members_dialog.refresh(members, banned)
+            # Jeśli dialog już istnieje dla tego pokoju — odśwież go
+            if (_app._members_dialog is not None
+                    and _app._members_dialog.winfo_exists()
+                    and _app._members_dialog_room_id == room_id):
+                _app._members_dialog.refresh(members, banned)
+                _app._members_dialog.lift()
                 return
 
-            if self._members_dialog is not None and self._members_dialog.winfo_exists():
-                self._members_dialog.destroy()
+            # Zamknij stary dialog (inny pokój lub nieistniejący)
+            if _app._members_dialog is not None:
+                try:
+                    if _app._members_dialog.winfo_exists():
+                        _app._members_dialog.destroy()
+                except Exception:
+                    pass
+                _app._members_dialog = None
 
-            self._members_dialog_room_id = room_id
-            self._members_dialog = MembersDialog(
-                self,
+            _app._members_dialog_room_id = room_id
+            _app._members_dialog = MembersDialog(
+                _app,
                 room_id=room_id,
                 room_name=room_name,
                 members=members,
                 banned=banned,
-                is_admin=(self._user_role == "admin"),
-                my_username=self._username,
+                is_admin=(_app._user_role == "admin"),
+                my_username=_app._username,
                 is_private=is_private,
-                on_kick=self._kick_user,
-                on_ban=self._ban_user,
-                on_unban=self._unban_user,
-                on_invite=self._send_invite if is_private else None,
+                on_kick=_app._kick_user,
+                on_ban=_app._ban_user,
+                on_unban=_app._unban_user,
+                on_invite=_app._send_invite if is_private else None,
+                on_leave=_app._leave_room_from_dialog,
             )
 
-        self.after(0, show)
+        self.after(0, lambda: show())
+
+    def _leave_room_from_dialog(self, room_id: int):
+        """Opuszcza kanał z poziomu dialogu uczestników (wymaga ponownego zaproszenia)."""
+        ConfirmDialog(
+            self,
+            title="Opuść kanał",
+            message="Czy na pewno chcesz opuścić ten kanał?\nAby wrócić, będziesz potrzebować nowego zaproszenia.",
+            on_confirm=lambda: self._do_leave_room(room_id),
+            confirm_label="Opuść",
+        )
+
+    def _do_leave_room(self, room_id: int):
+        """Wysyła LEAVE_ROOM i czyści stan."""
+        self._run_async(self.sender.send_leave_room(room_id))
+        self._current_room_id = None
+        self._current_room_name = None
+        if self._chat:
+            self._chat.room_left(room_id)
+        if self._members_dialog is not None:
+            try:
+                if self._members_dialog.winfo_exists():
+                    self._members_dialog.destroy()
+            except Exception:
+                pass
+            self._members_dialog = None
 
     def _kick_user(self, room_id: int, user_id: int, username: str):
         ConfirmDialog(
@@ -651,11 +680,6 @@ class RCMPApp(ctk.CTk):
         self._run_async(self._async_send_dm(target_username, body))
 
     async def _async_send_dm(self, target_username: str, body: str):
-        # Pobierz user_id odbiorcy - musimy wysłać przez send_message która oblicza HMAC
-        # Ale send_message przyjmuje target_id, a my mamy tylko username
-        # Rozwiązanie: rozszerz sender.send_message o target_type="dm_by_username"
-        # lub stwórz nową metodę send_dm w senderze
-        # Tymczasowo: używamy bezpośredniego wywołania z obliczonym HMAC
         import time
         import uuid
 
@@ -889,7 +913,8 @@ class MembersDialog(ctk.CTkToplevel):
     def __init__(self, parent, room_id: int, room_name: str, members: list,
                  banned: list = None, is_admin: bool = False,
                  my_username: str = None, is_private: bool = False,
-                 on_kick=None, on_ban=None, on_unban=None, on_invite=None):
+                 on_kick=None, on_ban=None, on_unban=None, on_invite=None,
+                 on_leave=None):
         super().__init__(parent)
         self.room_id = room_id
         self.room_name = room_name
@@ -900,10 +925,11 @@ class MembersDialog(ctk.CTkToplevel):
         self.on_ban = on_ban
         self.on_unban = on_unban
         self.on_invite = on_invite
+        self.on_leave = on_leave
 
         self.title(f"Uczestnicy — #{room_name}")
-        self.geometry("360x480")
-        self.minsize(320, 360)
+        self.geometry("360x520")
+        self.minsize(320, 400)
 
         ctk.CTkLabel(self, text=f"👥  #{room_name}",
                      font=ctk.CTkFont(size=16, weight="bold")).pack(pady=(20, 2))
@@ -912,13 +938,25 @@ class MembersDialog(ctk.CTkToplevel):
             self, text="", font=ctk.CTkFont(size=11), text_color="#888888")
         self._count_label.pack(pady=(0, 8))
 
+        # Przyciski akcji — zaproszenie (admin) i opuszczenie kanału
+        btn_row = ctk.CTkFrame(self, fg_color="transparent")
+        btn_row.pack(fill="x", padx=20, pady=(0, 10))
+
         if self.is_admin and self.is_private and self.on_invite:
             ctk.CTkButton(
-                self, text="✉  Zaproś użytkownika", height=32,
+                btn_row, text="✉  Zaproś", height=32,
                 font=ctk.CTkFont(size=12),
                 fg_color="#3B3FA6", hover_color="#5558CC",
                 command=self._invite,
-            ).pack(fill="x", padx=20, pady=(0, 10))
+            ).pack(side="left", fill="x", expand=True, padx=(0, 4))
+
+        if self.on_leave:
+            ctk.CTkButton(
+                btn_row, text="🚪  Opuść kanał", height=32,
+                font=ctk.CTkFont(size=12),
+                fg_color="#555555", hover_color="#CC4444",
+                command=self._leave,
+            ).pack(side="left", fill="x", expand=True)
 
         self._members_frame = ctk.CTkScrollableFrame(self, fg_color="transparent")
         self._members_frame.pack(fill="both", expand=True, padx=12, pady=(0, 16))
@@ -928,6 +966,10 @@ class MembersDialog(ctk.CTkToplevel):
     def _invite(self):
         if self.on_invite:
             SendInviteDialog(self, self.room_id, self.room_name, self.on_invite)
+
+    def _leave(self):
+        if self.on_leave:
+            self.on_leave(self.room_id)
 
     def refresh(self, members: list, banned: list = None):
         """Przebudowuje listę uczestników (i zbanowanych dla admina)."""
@@ -1169,22 +1211,24 @@ class DMWindow(ctk.CTkToplevel):
     def _on_close(self):
         self.withdraw()
 
+
 class ConfirmDialog(ctk.CTkToplevel):
     """Okno potwierdzenia akcji."""
 
-    def __init__(self, parent, title: str, message: str, on_confirm):
+    def __init__(self, parent, title: str, message: str, on_confirm,
+                 confirm_label: str = "Usuń"):
         super().__init__(parent)
         self.on_confirm = on_confirm
 
         self.title(title)
-        self.geometry("340x160")
+        self.geometry("360x200")
         self.resizable(False, False)
         self.grab_set()
 
         ctk.CTkLabel(
             self, text=message,
             font=ctk.CTkFont(size=13),
-            wraplength=300,
+            wraplength=320,
             justify="center",
         ).pack(expand=True, pady=(24, 12))
 
@@ -1192,7 +1236,7 @@ class ConfirmDialog(ctk.CTkToplevel):
         btn_frame.pack(pady=(0, 20))
 
         ctk.CTkButton(
-            btn_frame, text="Usuń", width=110, height=34,
+            btn_frame, text=confirm_label, width=110, height=36,
             fg_color="#CC4444", hover_color="#AA2222",
             font=ctk.CTkFont(size=13, weight="bold"),
             command=self._confirm,
@@ -1218,7 +1262,7 @@ class CreateRoomDialog(ctk.CTkToplevel):
         self.on_create = on_create
 
         self.title("Utwórz pokój")
-        self.geometry("340x240")
+        self.geometry("380x300")
         self.resizable(False, False)
         self.grab_set()
 
@@ -1245,10 +1289,10 @@ class CreateRoomDialog(ctk.CTkToplevel):
         self._error.pack()
 
         ctk.CTkButton(
-            self, text="Utwórz", height=38,
-            font=ctk.CTkFont(size=13, weight="bold"),
+            self, text="Utwórz pokój", height=46,
+            font=ctk.CTkFont(size=14, weight="bold"),
             command=self._create,
-        ).pack(fill="x", padx=32, pady=(8, 20))
+        ).pack(fill="x", padx=24, pady=(12, 24))
 
         self._entry.bind("<Return>", lambda e: self._create())
         self.after(100, self._entry.focus)
