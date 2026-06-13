@@ -17,7 +17,7 @@ from server.handlers.bye import handle_bye
 from server.handlers.messaging import handle_send_message, handle_message_ack
 from server.handlers.rooms import handle_join_room, handle_leave_room
 from server.handlers.invite import handle_room_invite_accept, handle_room_invite_decline, send_invite
-from server.handlers.admin import handle_create_room
+from server.handlers.admin import handle_create_room, handle_delete_room
 from server.handlers.friends import (
     handle_friend_request, handle_friend_request_accept,
     handle_friend_request_decline, send_friends_list_on_login,
@@ -254,6 +254,9 @@ class RCMPServer:
 
         elif msg_type == MessageType.CREATE_ROOM:
             await handle_create_room(data, session, self.router, self.db_pool)
+
+        elif msg_type == MessageType.DELETE_ROOM:
+            await handle_delete_room(data, session, self.router, self.db_pool, self.room_manager)
 
         elif msg_type == MessageType.DIRECT_MESSAGE:
             await handle_send_message(data, session, self.router,

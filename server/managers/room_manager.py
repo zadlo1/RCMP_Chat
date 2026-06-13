@@ -110,3 +110,6 @@ class RoomManager:
             "SELECT id, name FROM rooms WHERE is_private = FALSE ORDER BY name"
         )
         return [dict(r) for r in rows]
+    def remove_room(self, room_id: int):
+        """Usuwa pokój z pamięci in-memory (po usunięciu z bazy przez admina)."""
+        self._room_members.pop(room_id, None)
