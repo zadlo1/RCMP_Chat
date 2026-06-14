@@ -21,7 +21,10 @@ from server.handlers.rooms import (
     handle_room_members, handle_room_kick, handle_room_ban, handle_room_unban,
 )
 from server.handlers.invite import handle_room_invite_accept, handle_room_invite_decline, send_invite
-from server.handlers.admin import handle_create_room, handle_delete_room
+from server.handlers.admin import (
+    handle_create_room, handle_delete_room,
+    handle_admin_users_request, handle_delete_user, handle_set_user_role,
+)
 from server.handlers.friends import (
     handle_friend_request, handle_friend_request_accept,
     handle_friend_request_decline, send_friends_list_on_login,
@@ -338,6 +341,20 @@ class RCMPServer:
 
         elif msg_type == MessageType.ROOM_UNBAN:
             await handle_room_unban(data, session, self.router, self.room_manager, self.session_manager)
+
+        elif msg_type == MessageType.ADMIN_USERS_REQUEST:
+            await handle_admin_users_request(data, session, self.router, self.db_pool)
+
+        elif msg_type == MessageType.DELETE_USER:
+            await handle_delete_user(
+                data, session, self.router, self.db_pool,
+                self.session_manager, self.room_manager
+            )
+
+        elif msg_type == MessageType.SET_USER_ROLE:
+            await handle_set_user_role(
+                data, session, self.router, self.db_pool, self.session_manager
+            )
 
 
         elif msg_type == MessageType.DIRECT_MESSAGE:

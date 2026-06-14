@@ -70,6 +70,19 @@ class RCMPSender:
     async def send_room_unban(self, room_id: int, user_id: int) -> str:
         return await self.send("ROOM_UNBAN", {"room_id": room_id, "user_id": user_id})
 
+    # ------------------------------------------------------------------
+    # Panel administratora — zarządzanie użytkownikami
+    # ------------------------------------------------------------------
+
+    async def send_admin_users_request(self) -> str:
+        return await self.send("ADMIN_USERS_REQUEST")
+
+    async def send_delete_user(self, user_id: int) -> str:
+        return await self.send("DELETE_USER", {"user_id": user_id})
+
+    async def send_set_user_role(self, user_id: int, role: str) -> str:
+        return await self.send("SET_USER_ROLE", {"user_id": user_id, "role": role})
+
     async def send_message(self, target_type: str, target_id: int, body: str) -> str:
         """
         Wysyła SEND_MESSAGE z obliczonym HMAC.

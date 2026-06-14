@@ -7,7 +7,7 @@ from client.protocol.sender import RCMPSender
 from client.protocol.receiver import RCMPReceiver
 from client.gui.login_window import LoginWindow
 from client.gui.chat_window import ChatWindow
-from client.gui.widgets import MemberListItem, BannedUserItem
+from client.gui.widgets import MemberListItem, BannedUserItem, AdminUserListItem, AdminRoomListItem
 from server.config import Config
 
 
@@ -42,6 +42,7 @@ class RCMPApp(ctk.CTk):
         self._pending_rooms: list = []
         self._members_dialog = None
         self._members_dialog_room_id: int = None
+        self._admin_panel = None
 
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._run_loop, daemon=True)
@@ -129,10 +130,16 @@ class RCMPApp(ctk.CTk):
         self.receiver.on("MESSAGE_EXPIRE",   self._on_message_expire)
         self.receiver.on("FRIEND_REMOVE",    self._on_friend_removed)
         self.receiver.on("CREATE_ROOM_OK",   self._on_create_room_ok)
+        self.receiver.on("DELETE_ROOM_OK",   self._on_delete_room_ok)
         self.receiver.on("ROOM_MEMBERS_LIST", self._on_room_members_list)
         self.receiver.on("ROOM_KICK_OK",      self._on_room_kick_ok)
         self.receiver.on("ROOM_BAN_OK",       self._on_room_ban_ok)
         self.receiver.on("ROOM_UNBAN_OK",     self._on_room_unban_ok)
+        self.receiver.on("ADMIN_USERS_LIST",  self._on_admin_users_list)
+        self.receiver.on("DELETE_USER_OK",    self._on_delete_user_ok)
+        self.receiver.on("SET_USER_ROLE_OK",  self._on_set_user_role_ok)
+        self.receiver.on("ACCOUNT_DELETED",   self._on_account_deleted)
+        self.receiver.on("ROLE_CHANGED",      self._on_role_changed)
 
         self._bg_tasks = [
             asyncio.create_task(self.receiver.start()),
@@ -253,6 +260,9 @@ class RCMPApp(ctk.CTk):
                 text = f"{uname} został zbanowany w #{room_name} przez {by}"
         elif event == "info":
             text = payload.get("message", "")
+        elif event == "deleted":
+            deleted_by = payload.get("deleted_by", "?")
+            text = f"Kanał #{room_name} został usunięty przez {deleted_by}"
         else:
             text = f"Zdarzenie: {event}"
 
@@ -266,6 +276,15 @@ class RCMPApp(ctk.CTk):
                     _app._chat.remove_room(room_id)
                     _app._available_rooms.pop(room_id, None)
                 _app._chat.add_system_message(text, room_id=room_id)
+            elif event == "deleted" and room_id is not None:
+                if _app._current_room_id == room_id:
+                    _app._current_room_id = None
+                    _app._current_room_name = None
+                    _app._chat.room_left(room_id)
+                _app._chat.add_system_message(text)
+                _app._chat.remove_room(room_id)
+                _app._available_rooms.pop(room_id, None)
+                _app._refresh_admin_rooms()
             else:
                 _app._chat.add_system_message(text, room_id=room_id)
 
@@ -365,6 +384,10 @@ class RCMPApp(ctk.CTk):
             self.after(0, lambda: revert())
             self.after(0, lambda: self._show_info_popup(
                 "Brak dostępu", "Zostałeś zbanowany w tym pokoju."))
+        elif code in (4032, 4033, 4044, 4093):
+            # Błędy panelu administratora (FORBIDDEN, SELF_ACTION_FORBIDDEN,
+            # LAST_ADMIN, INVALID_ROLE) — pokaż jako popup w panelu, jeśli otwarty
+            self.after(0, lambda m=msg: self._show_info_popup("Panel administratora", m))
         else:
             self.after(0, lambda: self._chat.add_system_message(f"Błąd {code}: {msg}"))
 
@@ -483,6 +506,7 @@ class RCMPApp(ctk.CTk):
             is_admin=(self._user_role == "admin"),
             on_create_room=self._show_create_room_dialog,
             on_view_members=self._view_members,
+            on_admin_panel=self._show_admin_panel,
         )
         self._chat.pack(fill="both", expand=True)
         self._chat.set_tls_version(self._tls_version)
@@ -507,8 +531,34 @@ class RCMPApp(ctk.CTk):
             if _app._chat:
                 _app._chat.add_room(rid, rname, rpriv)
                 _app._chat.add_system_message(f"Pokój #{rname} został utworzony")
+            _app._refresh_admin_rooms()
 
         self.after(0, lambda: add_to_gui())
+
+    async def _on_delete_room_ok(self, data: dict):
+        """Odpowiedź dla admina po usunięciu kanału (DELETE_ROOM_OK).
+
+        Czyści UI nawet jeśli admin nie był aktualnie w usuwanym pokoju
+        (ROOM_EVENT 'deleted' dociera tylko do obecnych członków).
+        """
+        payload = data.get("payload", {})
+        room_id = payload.get("room_id")
+        room_name = payload.get("room_name", "")
+
+        def cleanup(_app=self, rid=room_id, rname=room_name):
+            already_removed = rid not in _app._available_rooms
+            if _app._current_room_id == rid:
+                _app._current_room_id = None
+                _app._current_room_name = None
+                _app._chat.room_left(rid)
+            if _app._chat:
+                _app._chat.remove_room(rid)
+                if not already_removed:
+                    _app._chat.add_system_message(f"Kanał #{rname} został usunięty")
+            _app._available_rooms.pop(rid, None)
+            _app._refresh_admin_rooms()
+
+        self.after(0, lambda: cleanup())
 
     def _show_create_room_dialog(self):
         CreateRoomDialog(self, on_create=self._create_room)
@@ -687,6 +737,138 @@ class RCMPApp(ctk.CTk):
                 and self._members_dialog.winfo_exists()
                 and self._members_dialog_room_id == room_id):
             self._run_async(self.sender.send_room_members_request(room_id))
+
+    # ------------------------------------------------------------------
+    # Panel administratora
+    # ------------------------------------------------------------------
+
+    def _show_admin_panel(self):
+        """Otwiera panel administratora i odpytuje serwer o listę użytkowników."""
+        if self._admin_panel is not None and self._admin_panel.winfo_exists():
+            self._admin_panel.lift()
+        else:
+            self._admin_panel = AdminPanelDialog(
+                self,
+                available_rooms=self._available_rooms,
+                my_username=self._username,
+                on_delete_room=self._admin_delete_room,
+                on_delete_user=self._admin_delete_user,
+                on_toggle_role=self._admin_set_user_role,
+            )
+        self._refresh_admin_users()
+        self._refresh_admin_rooms()
+
+    def _refresh_admin_users(self):
+        self._run_async(self.sender.send_admin_users_request())
+
+    def _refresh_admin_rooms(self):
+        if self._admin_panel is not None and self._admin_panel.winfo_exists():
+            self.after(0, lambda: self._admin_panel.set_rooms(self._available_rooms))
+
+    async def _on_admin_users_list(self, data: dict):
+        payload = data.get("payload", {})
+        users = payload.get("users", [])
+
+        def show(_app=self):
+            if _app._admin_panel is not None and _app._admin_panel.winfo_exists():
+                _app._admin_panel.set_users(users)
+
+        self.after(0, lambda: show())
+
+    def _admin_delete_room(self, room_id: int, room_name: str):
+        ConfirmDialog(
+            self,
+            title="Usuń kanał",
+            message=(f"Czy na pewno chcesz usunąć kanał #{room_name}?\n"
+                     f"Wszystkie wiadomości w tym kanale zostaną utracone."),
+            on_confirm=lambda: self._run_async(
+                self.sender.send("DELETE_ROOM", {"room_id": room_id})
+            ),
+        )
+
+    def _admin_delete_user(self, user_id: int, username: str):
+        ConfirmDialog(
+            self,
+            title="Usuń konto użytkownika",
+            message=(f"Czy na pewno chcesz usunąć konto użytkownika {username}?\n"
+                     f"Tej operacji nie można odwrócić."),
+            on_confirm=lambda: self._run_async(
+                self.sender.send_delete_user(user_id)
+            ),
+        )
+
+    def _admin_set_user_role(self, user_id: int, username: str, new_role: str):
+        if new_role == "admin":
+            title = "Nadaj uprawnienia administratora"
+            message = f"Czy na pewno chcesz nadać {username} uprawnienia administratora?"
+        else:
+            title = "Odbierz uprawnienia administratora"
+            message = f"Czy na pewno chcesz odebrać {username} uprawnienia administratora?"
+
+        ConfirmDialog(
+            self,
+            title=title,
+            message=message,
+            on_confirm=lambda: self._run_async(
+                self.sender.send_set_user_role(user_id, new_role)
+            ),
+            confirm_label="Potwierdź",
+        )
+
+    async def _on_delete_user_ok(self, data: dict):
+        payload = data.get("payload", {})
+        username = payload.get("username", "?")
+        self.after(0, lambda: self._chat.add_system_message(
+            f"Konto użytkownika {username} zostało usunięte"
+        ) if self._chat else None)
+        self._refresh_admin_users()
+
+    async def _on_set_user_role_ok(self, data: dict):
+        payload = data.get("payload", {})
+        username = payload.get("username", "?")
+        role = payload.get("role", "user")
+        role_label = "administratora" if role == "admin" else "użytkownika"
+        self.after(0, lambda: self._chat.add_system_message(
+            f"{username} ma teraz uprawnienia {role_label}"
+        ) if self._chat else None)
+        self._refresh_admin_users()
+
+    async def _on_account_deleted(self, data: dict):
+        """Nasze konto zostało usunięte przez administratora."""
+        payload = data.get("payload", {})
+        msg = payload.get("message", "Twoje konto zostało usunięte.")
+
+        def handle(_app=self, m=msg):
+            if _app._admin_panel is not None and _app._admin_panel.winfo_exists():
+                _app._admin_panel.destroy()
+                _app._admin_panel = None
+            _app.conn.disconnect()
+            if _app._chat:
+                _app._chat.pack_forget()
+                _app._chat = None
+            _app._show_login()
+            _app._login_window.show_error(m)
+
+        self.after(0, lambda: handle())
+
+    async def _on_role_changed(self, data: dict):
+        """Nasza rola została zmieniona przez administratora."""
+        payload = data.get("payload", {})
+        new_role = payload.get("role", "user")
+        self._user_role = new_role
+
+        def apply(_app=self, role=new_role):
+            if _app._chat:
+                _app._chat.set_admin_mode(role == "admin")
+                role_label = "administratora" if role == "admin" else "użytkownika"
+                _app._chat.add_system_message(
+                    f"Twoja rola została zmieniona na {role_label}."
+                )
+            if role != "admin" and _app._admin_panel is not None and _app._admin_panel.winfo_exists():
+                _app._admin_panel.destroy()
+                _app._admin_panel = None
+
+        self.after(0, lambda: apply())
 
     def _join_room(self, room_id: int):
         room = self._available_rooms.get(room_id, {})
@@ -1366,3 +1548,101 @@ class CreateRoomDialog(ctk.CTkToplevel):
             return
         self.on_create(name, self._private_var.get())
         self.destroy()
+
+class AdminPanelDialog(ctk.CTkToplevel):
+    """
+    Panel administratora.
+
+    Zakładka "Pokoje" — lista wszystkich kanałów z możliwością usunięcia.
+    Zakładka "Użytkownicy" — lista wszystkich kont z możliwością usunięcia
+    konta oraz nadania/odebrania uprawnień administratora.
+    """
+
+    def __init__(self, parent, available_rooms: dict, my_username: str,
+                 on_delete_room, on_delete_user, on_toggle_role):
+        super().__init__(parent)
+        self.on_delete_room = on_delete_room
+        self.on_delete_user = on_delete_user
+        self.on_toggle_role = on_toggle_role
+        self.my_username = my_username
+
+        self.title("Panel administratora")
+        self.geometry("420x520")
+        self.minsize(360, 400)
+
+        ctk.CTkLabel(self, text="⚙  Panel administratora",
+                     font=ctk.CTkFont(size=16, weight="bold")).pack(pady=(16, 8))
+
+        self._tabs = ctk.CTkTabview(self)
+        self._tabs.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+
+        self._rooms_tab = self._tabs.add("Kanały")
+        self._users_tab = self._tabs.add("Użytkownicy")
+
+        # --- Zakładka kanałów ---
+        self._rooms_frame = ctk.CTkScrollableFrame(self._rooms_tab, fg_color="transparent")
+        self._rooms_frame.pack(fill="both", expand=True, padx=4, pady=4)
+
+        # --- Zakładka użytkowników ---
+        self._users_info = ctk.CTkLabel(
+            self._users_tab, text="Wczytywanie...",
+            font=ctk.CTkFont(size=11), text_color="#888888")
+        self._users_info.pack(anchor="w", padx=8, pady=(4, 2))
+
+        self._users_frame = ctk.CTkScrollableFrame(self._users_tab, fg_color="transparent")
+        self._users_frame.pack(fill="both", expand=True, padx=4, pady=4)
+
+        self.set_rooms(available_rooms)
+
+    # ------------------------------------------------------------------
+    # Kanały
+    # ------------------------------------------------------------------
+
+    def set_rooms(self, available_rooms: dict):
+        for widget in self._rooms_frame.winfo_children():
+            widget.destroy()
+
+        if not available_rooms:
+            ctk.CTkLabel(self._rooms_frame, text="Brak kanałów",
+                         font=ctk.CTkFont(size=11),
+                         text_color="#555555").pack(pady=8)
+            return
+
+        for room_id, info in sorted(available_rooms.items(), key=lambda kv: kv[1]["name"]):
+            item = AdminRoomListItem(
+                self._rooms_frame,
+                room_id=room_id,
+                room_name=info["name"],
+                is_private=info.get("is_private", False),
+                on_delete=self.on_delete_room,
+            )
+            item.pack(fill="x", pady=1)
+
+    # ------------------------------------------------------------------
+    # Użytkownicy
+    # ------------------------------------------------------------------
+
+    def set_users(self, users: list):
+        for widget in self._users_frame.winfo_children():
+            widget.destroy()
+
+        self._users_info.configure(text=f"{len(users)} kont w systemie")
+
+        if not users:
+            ctk.CTkLabel(self._users_frame, text="Brak użytkowników",
+                         font=ctk.CTkFont(size=11),
+                         text_color="#555555").pack(pady=8)
+            return
+
+        for u in users:
+            item = AdminUserListItem(
+                self._users_frame,
+                user_id=u.get("id"),
+                username=u.get("username", "?"),
+                role=u.get("role", "user"),
+                status=u.get("status", "offline"),
+                is_self=(u.get("username") == self.my_username),
+                on_delete=self.on_delete_user,
+                on_toggle_role=self.on_toggle_role,
+            )
+            item.pack(fill="x", pady=1)

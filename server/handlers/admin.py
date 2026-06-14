@@ -2,8 +2,9 @@ import uuid
 import time
 import asyncpg
 
-from server.session import Session
+from server.session import Session, SessionManager
 from server.managers.message_router import MessageRouter
+from server.managers.room_manager import RoomManager
 from shared.error_codes import ErrorCode
 
 
@@ -147,6 +148,258 @@ async def handle_delete_room(
         "payload": {
             "room_id": room_id,
             "room_name": room_name,
+        }
+    }
+    await router._write(session.writer, response)
+
+
+# ----------------------------------------------------------------------
+# Panel administratora — zarządzanie użytkownikami
+# ----------------------------------------------------------------------
+
+VALID_ROLES = {"user", "admin"}
+
+
+async def handle_admin_users_request(
+    data: dict,
+    session: Session,
+    router: MessageRouter,
+    db_pool: asyncpg.Pool,
+):
+    """
+    Zwraca listę wszystkich użytkowników (dla panelu administratora).
+    Tylko admin.
+    """
+    msg_id = data.get("msg_id")
+
+    if session.role != "admin":
+        await router.send_error(session.writer, ErrorCode.FORBIDDEN,
+                                ErrorCode.get_message(ErrorCode.FORBIDDEN), msg_id)
+        return
+
+    rows = await db_pool.fetch(
+        """
+        SELECT id, username, role, status, is_blocked, created_at, last_seen
+        FROM users
+        ORDER BY username
+        """
+    )
+
+    users = []
+    for row in rows:
+        users.append({
+            "id": row["id"],
+            "username": row["username"],
+            "role": row["role"],
+            "status": row["status"],
+            "is_blocked": row["is_blocked"],
+            "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+            "last_seen": row["last_seen"].isoformat() if row["last_seen"] else None,
+        })
+
+    response = {
+        "type": "ADMIN_USERS_LIST",
+        "msg_id": str(uuid.uuid4()),
+        "ts": int(time.time() * 1000),
+        "token": session.token,
+        "payload": {
+            "ref_msg_id": msg_id,
+            "users": users,
+        }
+    }
+    await router._write(session.writer, response)
+
+
+async def handle_delete_user(
+    data: dict,
+    session: Session,
+    router: MessageRouter,
+    db_pool: asyncpg.Pool,
+    session_manager: SessionManager,
+    room_manager: RoomManager,
+):
+    """
+    Usuwa konto użytkownika. Tylko admin.
+
+    - Admin nie może usunąć samego siebie.
+    - Nie można usunąć ostatniego administratora.
+    - Jeśli użytkownik jest aktualnie zalogowany, zostaje powiadomiony
+      (ACCOUNT_DELETED) i jego sesja jest zamykana.
+    - Wszystkie powiązane dane (wiadomości, znajomości, ACL, bany)
+      są usuwane wraz z kontem.
+    """
+    msg_id = data.get("msg_id")
+    payload = data.get("payload") or {}
+    user_id = payload.get("user_id")
+
+    if session.role != "admin":
+        await router.send_error(session.writer, ErrorCode.FORBIDDEN,
+                                ErrorCode.get_message(ErrorCode.FORBIDDEN), msg_id)
+        return
+
+    if user_id is None:
+        await router.send_error(session.writer, ErrorCode.MALFORMED_ENVELOPE,
+                                "Missing user_id", msg_id)
+        return
+
+    if user_id == session.user_id:
+        await router.send_error(session.writer, ErrorCode.SELF_ACTION_FORBIDDEN,
+                                ErrorCode.get_message(ErrorCode.SELF_ACTION_FORBIDDEN), msg_id)
+        return
+
+    target = await db_pool.fetchrow(
+        "SELECT id, username, role FROM users WHERE id = $1", user_id
+    )
+    if target is None:
+        await router.send_error(session.writer, ErrorCode.USER_NOT_FOUND,
+                                ErrorCode.get_message(ErrorCode.USER_NOT_FOUND), msg_id)
+        return
+
+    # Nie pozwól usunąć ostatniego administratora
+    if target["role"] == "admin":
+        admin_count = await db_pool.fetchval(
+            "SELECT COUNT(*) FROM users WHERE role = 'admin'"
+        )
+        if admin_count <= 1:
+            await router.send_error(session.writer, ErrorCode.LAST_ADMIN,
+                                    ErrorCode.get_message(ErrorCode.LAST_ADMIN), msg_id)
+            return
+
+    target_username = target["username"]
+
+    # Jeśli użytkownik jest zalogowany — powiadom go i zamknij sesję
+    target_session = session_manager.get_by_user_id(user_id)
+    if target_session is not None:
+        notice = {
+            "type": "ACCOUNT_DELETED",
+            "msg_id": str(uuid.uuid4()),
+            "ts": int(time.time() * 1000),
+            "token": None,
+            "payload": {
+                "message": "Twoje konto zostało usunięte przez administratora.",
+                "deleted_by": session.username,
+            }
+        }
+        await router._write(target_session.writer, notice)
+
+        room_manager.leave_all_rooms(user_id)
+        router.unregister(user_id)
+        session_manager.remove_session(target_session)
+        try:
+            target_session.writer.close()
+        except Exception:
+            pass
+
+    # Usuń konto i powiązane dane z bazy
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "DELETE FROM messages WHERE sender_id = $1 OR recipient_id = $1",
+                user_id
+            )
+            await conn.execute("DELETE FROM users WHERE id = $1", user_id)
+
+    response = {
+        "type": "DELETE_USER_OK",
+        "msg_id": str(uuid.uuid4()),
+        "ts": int(time.time() * 1000),
+        "token": session.token,
+        "payload": {
+            "user_id": user_id,
+            "username": target_username,
+        }
+    }
+    await router._write(session.writer, response)
+
+
+async def handle_set_user_role(
+    data: dict,
+    session: Session,
+    router: MessageRouter,
+    db_pool: asyncpg.Pool,
+    session_manager: SessionManager,
+):
+    """
+    Zmienia rolę użytkownika (user <-> admin). Tylko admin.
+
+    - Admin nie może zmienić własnej roli (zabezpieczenie przed
+      przypadkowym odebraniem sobie uprawnień).
+    - Jeśli docelowy użytkownik jest aktualnie zalogowany, jego sesja
+      i token są aktualizowane na bieżąco oraz wysyłane jest
+      powiadomienie ROLE_CHANGED.
+    """
+    msg_id = data.get("msg_id")
+    payload = data.get("payload") or {}
+    user_id = payload.get("user_id")
+    new_role = payload.get("role")
+
+    if session.role != "admin":
+        await router.send_error(session.writer, ErrorCode.FORBIDDEN,
+                                ErrorCode.get_message(ErrorCode.FORBIDDEN), msg_id)
+        return
+
+    if user_id is None or new_role is None:
+        await router.send_error(session.writer, ErrorCode.MALFORMED_ENVELOPE,
+                                "Missing user_id or role", msg_id)
+        return
+
+    if new_role not in VALID_ROLES:
+        await router.send_error(session.writer, ErrorCode.INVALID_ROLE,
+                                ErrorCode.get_message(ErrorCode.INVALID_ROLE), msg_id)
+        return
+
+    if user_id == session.user_id:
+        await router.send_error(session.writer, ErrorCode.SELF_ACTION_FORBIDDEN,
+                                ErrorCode.get_message(ErrorCode.SELF_ACTION_FORBIDDEN), msg_id)
+        return
+
+    target = await db_pool.fetchrow(
+        "SELECT id, username, role FROM users WHERE id = $1", user_id
+    )
+    if target is None:
+        await router.send_error(session.writer, ErrorCode.USER_NOT_FOUND,
+                                ErrorCode.get_message(ErrorCode.USER_NOT_FOUND), msg_id)
+        return
+
+    # Nie pozwól odebrać uprawnień ostatniemu administratorowi
+    if target["role"] == "admin" and new_role != "admin":
+        admin_count = await db_pool.fetchval(
+            "SELECT COUNT(*) FROM users WHERE role = 'admin'"
+        )
+        if admin_count <= 1:
+            await router.send_error(session.writer, ErrorCode.LAST_ADMIN,
+                                    ErrorCode.get_message(ErrorCode.LAST_ADMIN), msg_id)
+            return
+
+    await db_pool.execute(
+        "UPDATE users SET role = $1 WHERE id = $2", new_role, user_id
+    )
+
+    # Jeśli użytkownik jest zalogowany — zaktualizuj sesję i powiadom go
+    target_session = session_manager.get_by_user_id(user_id)
+    if target_session is not None:
+        target_session.role = new_role
+        notice = {
+            "type": "ROLE_CHANGED",
+            "msg_id": str(uuid.uuid4()),
+            "ts": int(time.time() * 1000),
+            "token": target_session.token,
+            "payload": {
+                "role": new_role,
+                "changed_by": session.username,
+            }
+        }
+        await router._write(target_session.writer, notice)
+
+    response = {
+        "type": "SET_USER_ROLE_OK",
+        "msg_id": str(uuid.uuid4()),
+        "ts": int(time.time() * 1000),
+        "token": session.token,
+        "payload": {
+            "user_id": user_id,
+            "username": target["username"],
+            "role": new_role,
         }
     }
     await router._write(session.writer, response)

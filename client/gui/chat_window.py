@@ -8,7 +8,7 @@ class ChatWindow(ctk.CTkFrame):
     def __init__(self, parent, username: str, on_send, on_join_room,
                  on_leave_room, on_add_friend=None, on_open_dm=None,
                  on_remove_friend=None, is_admin=False, on_create_room=None,
-                 on_view_members=None, **kwargs):
+                 on_view_members=None, on_admin_panel=None, **kwargs):
         super().__init__(parent, corner_radius=0, **kwargs)
 
         self.username = username
@@ -21,6 +21,7 @@ class ChatWindow(ctk.CTkFrame):
         self.is_admin = is_admin
         self.on_create_room = on_create_room
         self.on_view_members = on_view_members
+        self.on_admin_panel = on_admin_panel
         self._friend_items: dict[str, object] = {}
 
         self._current_room_id = None
@@ -65,13 +66,15 @@ class ChatWindow(ctk.CTkFrame):
                      font=ctk.CTkFont(size=10),
                      text_color="#888888").pack(side="left")
 
+        self._rooms_hdr = rooms_hdr
+        self._create_room_btn = ctk.CTkButton(
+            rooms_hdr, text="+", width=24, height=20,
+            font=ctk.CTkFont(size=14, weight="bold"),
+            fg_color="#3B3FA6", hover_color="#5558CC",
+            command=lambda: self.on_create_room() if self.on_create_room else None,
+        )
         if self.is_admin:
-            ctk.CTkButton(
-                rooms_hdr, text="+", width=24, height=20,
-                font=ctk.CTkFont(size=14, weight="bold"),
-                fg_color="#3B3FA6", hover_color="#5558CC",
-                command=lambda: self.on_create_room() if self.on_create_room else None,
-            ).pack(side="right")
+            self._create_room_btn.pack(side="right")
 
         self._rooms_frame = ctk.CTkScrollableFrame(
             self._sidebar, height=180, fg_color="transparent")
@@ -107,6 +110,15 @@ class ChatWindow(ctk.CTkFrame):
         ctk.CTkLabel(footer, text=f"👤  {self.username}",
                      font=ctk.CTkFont(size=13, weight="bold")).pack(
             side="left", padx=14)
+
+        self._admin_panel_btn = ctk.CTkButton(
+            footer, text="⚙ Admin", width=70, height=28,
+            font=ctk.CTkFont(size=12),
+            fg_color="#3B3FA6", hover_color="#5558CC",
+            command=lambda: self.on_admin_panel() if self.on_admin_panel else None,
+        )
+        if self.is_admin:
+            self._admin_panel_btn.pack(side="right", padx=10)
 
     def _build_chat(self):
         # Nagłówek
@@ -229,6 +241,20 @@ class ChatWindow(ctk.CTkFrame):
     def _view_members(self):
         if self._current_room_id is not None and self.on_view_members:
             self.on_view_members(self._current_room_id)
+
+    def set_admin_mode(self, is_admin: bool):
+        """Pokazuje lub chowa elementy interfejsu dostępne tylko dla administratora.
+
+        Wywoływane np. po otrzymaniu ROLE_CHANGED — pozwala zaktualizować
+        widok bez konieczności ponownego logowania.
+        """
+        self.is_admin = is_admin
+        if is_admin:
+            self._create_room_btn.pack(side="right")
+            self._admin_panel_btn.pack(side="right", padx=10)
+        else:
+            self._create_room_btn.pack_forget()
+            self._admin_panel_btn.pack_forget()
 
     def set_active_room(self, room_id: int, room_name: str):
         self._current_room_id = room_id

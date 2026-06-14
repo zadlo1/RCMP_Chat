@@ -51,6 +51,16 @@ class MessageType:
     ROOM_UNBAN_OK         = "ROOM_UNBAN_OK"
     ROOM_KICK_OK          = "ROOM_KICK_OK"
 
+    # Panel administratora — zarządzanie użytkownikami
+    ADMIN_USERS_REQUEST  = "ADMIN_USERS_REQUEST"
+    ADMIN_USERS_LIST     = "ADMIN_USERS_LIST"
+    DELETE_USER          = "DELETE_USER"
+    DELETE_USER_OK       = "DELETE_USER_OK"
+    SET_USER_ROLE        = "SET_USER_ROLE"
+    SET_USER_ROLE_OK     = "SET_USER_ROLE_OK"
+    ACCOUNT_DELETED      = "ACCOUNT_DELETED"
+    ROLE_CHANGED         = "ROLE_CHANGED"
+
     ALL = {
         "LOGIN", "JOIN_ROOM", "LEAVE_ROOM", "SEND_MESSAGE", "MESSAGE_ACK",
         "STATUS", "PING", "BYE", "LOGIN_OK", "LOGIN_ERR", "ROOM_EVENT",
@@ -66,6 +76,10 @@ class MessageType:
         "ROOM_KICK", "ROOM_BAN", "ROOM_UNBAN",
         "ROOM_BAN_OK", "ROOM_UNBAN_OK", "ROOM_KICK_OK",
         "REGISTER", "REGISTER_OK", "REGISTER_ERR",
+        "ADMIN_USERS_REQUEST", "ADMIN_USERS_LIST",
+        "DELETE_USER", "DELETE_USER_OK",
+        "SET_USER_ROLE", "SET_USER_ROLE_OK",
+        "ACCOUNT_DELETED", "ROLE_CHANGED",
     }
 
     # Rejestracja

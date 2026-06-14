@@ -13,11 +13,13 @@ class ErrorCode:
     # Błędy autoryzacji
     UNAUTHORIZED = 4031
     FORBIDDEN = 4032
+    SELF_ACTION_FORBIDDEN = 4033
 
     # Błędy zasobów
     ROOM_NOT_FOUND = 4041
     USER_NOT_FOUND = 4042
     ROOM_BANNED = 4043
+    LAST_ADMIN = 4044
 
     # Rate limiting
     SEND_RATE_LIMIT = 4291
@@ -25,6 +27,7 @@ class ErrorCode:
     # Błędy serwera
     USERNAME_TAKEN = 4091
     USERNAME_INVALID = 4092
+    INVALID_ROLE = 4093
     SERVER_ERROR = 5001
     SERVER_OVERLOAD = 5002
 
@@ -38,12 +41,15 @@ class ErrorCode:
         4012: "Login rate limit exceeded",
         4031: "Unauthorized",
         4032: "Forbidden",
+        4033: "Cannot perform this action on your own account",
         4041: "Room not found",
         4042: "User not found",
         4043: "Banned from this room",
+        4044: "Cannot remove the last administrator",
         4291: "Send rate limit exceeded",
         4091: "Username already taken",
         4092: "Invalid username format",
+        4093: "Invalid role",
         5001: "Internal server error",
         5002: "Server overload",
     }
