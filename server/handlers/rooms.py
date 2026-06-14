@@ -194,12 +194,19 @@ async def handle_room_members(
                 "role": row["role"],
                 "status": "online" if uid in online_ids else "offline",
             })
+
+        # Dodaj samego siebie do listy (zawsze online, bo wysyła zapytanie)
+        members.append({
+            "user_id": session.user_id,
+            "username": session.username,
+            "role": session.role,
+            "status": "online",
+        })
+        members.sort(key=lambda m: m["username"].lower())
     else:
         # Fallback: tylko aktywni online (stare zachowanie bez db_pool)
         online_ids = room_manager.get_room_members(room_id)
         for user_id in online_ids:
-            if user_id == session.user_id:
-                continue
             member_session = session_manager.get_by_user_id(user_id)
             if member_session is None:
                 continue
