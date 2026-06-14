@@ -91,13 +91,14 @@ class RCMPSender:
         msg_id = str(uuid.uuid4())
         self._seq_id += 1
         seq_id = self._seq_id
+        ts = int(time.time() * 1000)
 
-        hmac_val = self._compute_hmac(msg_id, int(time.time() * 1000), seq_id, body)
+        hmac_val = self._compute_hmac(msg_id, ts, seq_id, body)
 
         frame = {
             "type": "SEND_MESSAGE",
             "msg_id": msg_id,
-            "ts": int(time.time() * 1000),
+            "ts": ts,
             "token": self.token,
             "payload": {
                 "target_type": target_type,
@@ -113,16 +114,30 @@ class RCMPSender:
         return msg_id
 
     async def send_room_invite(self, room_id: int, room_name: str, invite_to: str) -> str:
-        """Wysyła zaproszenie do prywatnego pokoju."""
-        return await self.send("SEND_MESSAGE", {
-            "target_type": "invite",
-            "target_id": room_id,
-            "room_name": room_name,
-            "invite_to": invite_to,
-            "seq_id": 0,
-            "body": f"Zaproszenie do #{room_name}",
-            "hmac": "",
-        })
+        """Wysyła zaproszenie do pokoju z prawidłowym HMAC."""
+        msg_id = str(uuid.uuid4())
+        ts = int(time.time() * 1000)
+        seq_id = 0
+        body = f"Zaproszenie do #{room_name}"
+        hmac_val = self._compute_hmac(msg_id, ts, seq_id, body)
+
+        frame = {
+            "type": "SEND_MESSAGE",
+            "msg_id": msg_id,
+            "ts": ts,
+            "token": self.token,
+            "payload": {
+                "target_type": "invite",
+                "target_id": room_id,
+                "room_name": room_name,
+                "invite_to": invite_to,
+                "seq_id": seq_id,
+                "body": body,
+                "hmac": hmac_val,
+            }
+        }
+        await self._write(frame)
+        return msg_id
 
     async def send_ping(self) -> str:
         return await self.send("PING")
@@ -158,9 +173,8 @@ class RCMPSender:
                 to_remove.append(msg_id)
                 continue
 
-            # Retransmisja z tym samym msg_id i seq_id
+            # Retransmisja z tym samym msg_id, seq_id i ts (ts musi być niezmieniony — HMAC go obejmuje)
             print(f"[SENDER] Retransmisja ({attempts+1}): {msg_id[:8]}...")
-            frame["ts"] = int(time.time() * 1000)
             await self._write(frame)
             self._pending_acks[msg_id] = (frame, attempts + 1, time.time())
 
