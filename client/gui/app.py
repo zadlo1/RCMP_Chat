@@ -69,10 +69,33 @@ class RCMPApp(ctk.CTk):
     # ------------------------------------------------------------------
 
     def _show_login(self):
-        self._login_window = LoginWindow(self, on_login=self._do_login)
+        self._login_window = LoginWindow(
+            self,
+            on_login=self._do_login,
+            on_register=self._do_register,
+        )
 
     def _do_login(self, username: str, password: str):
         self._run_async(self._async_login(username, password))
+
+    def _do_register(self, username: str, password: str):
+        self._run_async(self._async_register(username, password))
+
+    async def _async_register(self, username: str, password: str):
+        connected = await self.conn.connect()
+        if not connected:
+            self.after(0, lambda: self._login_window.show_error(
+                "Nie mozna polaczyc z serwerem."))
+            return
+
+        self.receiver.on("REGISTER_OK",  self._on_register_ok)
+        self.receiver.on("REGISTER_ERR", self._on_register_err)
+        asyncio.create_task(self.receiver.start())
+
+        await self.sender.send("REGISTER", {
+            "username": username,
+            "password": password,
+        })
 
     async def _async_login(self, username: str, password: str):
         connected = await self.conn.connect()
@@ -116,6 +139,21 @@ class RCMPApp(ctk.CTk):
     # ------------------------------------------------------------------
     # Handlery serwera
     # ------------------------------------------------------------------
+
+    async def _on_register_ok(self, data: dict):
+        payload = data.get("payload", {})
+        msg = payload.get("message", "Konto zostalo utworzone.")
+        self.conn.disconnect()
+        self.after(0, lambda: (
+            self._login_window.show_success(f"Sukces! {msg}"),
+            self._login_window._switch_login(),
+        ))
+
+    async def _on_register_err(self, data: dict):
+        payload = data.get("payload", {})
+        msg = payload.get("message", "Blad rejestracji.")
+        self.conn.disconnect()
+        self.after(0, lambda: self._login_window.show_error(msg))
 
     async def _on_login_ok(self, data: dict):
         payload = data.get("payload", {})

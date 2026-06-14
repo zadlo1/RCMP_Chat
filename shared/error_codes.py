@@ -23,6 +23,8 @@ class ErrorCode:
     SEND_RATE_LIMIT = 4291
 
     # Błędy serwera
+    USERNAME_TAKEN = 4091
+    USERNAME_INVALID = 4092
     SERVER_ERROR = 5001
     SERVER_OVERLOAD = 5002
 
@@ -40,6 +42,8 @@ class ErrorCode:
         4042: "User not found",
         4043: "Banned from this room",
         4291: "Send rate limit exceeded",
+        4091: "Username already taken",
+        4092: "Invalid username format",
         5001: "Internal server error",
         5002: "Server overload",
     }

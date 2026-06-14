@@ -12,6 +12,7 @@ from server.managers.message_router import MessageRouter
 from server.managers.room_manager import RoomManager
 from server.managers.rate_limiter import RateLimiter
 from server.handlers.login import handle_login
+from server.handlers.register import handle_register
 from server.handlers.keepalive import handle_ping, handle_pong
 from server.handlers.bye import handle_bye
 from server.handlers.messaging import handle_send_message, handle_message_ack

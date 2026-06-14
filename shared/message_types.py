@@ -65,7 +65,13 @@ class MessageType:
         "ROOM_MEMBERS_REQUEST", "ROOM_MEMBERS_LIST",
         "ROOM_KICK", "ROOM_BAN", "ROOM_UNBAN",
         "ROOM_BAN_OK", "ROOM_UNBAN_OK", "ROOM_KICK_OK",
+        "REGISTER", "REGISTER_OK", "REGISTER_ERR",
     }
 
+    # Rejestracja
+    REGISTER      = "REGISTER"
+    REGISTER_OK   = "REGISTER_OK"
+    REGISTER_ERR  = "REGISTER_ERR"
+
     # Typy które nie wymagają tokenu sesji
-    NO_AUTH_REQUIRED = {"LOGIN"}
+    NO_AUTH_REQUIRED = {"LOGIN", "REGISTER"}
