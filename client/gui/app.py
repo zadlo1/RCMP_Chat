@@ -82,14 +82,21 @@ class RCMPApp(ctk.CTk):
         self._run_async(self._async_register(username, password))
 
     async def _async_register(self, username: str, password: str):
+        # Rozłącz poprzednie połączenie (np. po wcześniejszym błędzie rejestracji)
+        if self.conn.is_connected():
+            self.conn.disconnect()
+        self.receiver.stop()
+
         connected = await self.conn.connect()
         if not connected:
             self.after(0, lambda: self._login_window.show_error(
-                "Nie mozna polaczyc z serwerem."))
+                "Nie można połączyć z serwerem.\nSprawdź czy serwer jest uruchomiony."))
             return
 
+        # Zawsze rejestruj handlery od nowa — poprzednia sesja mogła je nadpisać
         self.receiver.on("REGISTER_OK",  self._on_register_ok)
         self.receiver.on("REGISTER_ERR", self._on_register_err)
+        self.receiver.on("ERROR",        self._on_register_err)
         asyncio.create_task(self.receiver.start())
 
         await self.sender.send("REGISTER", {
@@ -150,8 +157,22 @@ class RCMPApp(ctk.CTk):
         ))
 
     async def _on_register_err(self, data: dict):
+        from shared.error_codes import ErrorCode
         payload = data.get("payload", {})
+        code = payload.get("code")
         msg = payload.get("message", "Blad rejestracji.")
+
+        # Przyjazne komunikaty dla znanych kodow bledow
+        if code == ErrorCode.USERNAME_TAKEN:
+            msg = "Nazwa uzytkownika jest juz zajeta.\nWybierz inna nazwe."
+        elif code == ErrorCode.USERNAME_INVALID:
+            msg = "Nieprawidlowa nazwa uzytkownika.\nDozwolone: litery, cyfry, _ lub - (3-64 znaki)."
+        elif code == ErrorCode.LOGIN_RATE_LIMIT:
+            msg = "Zbyt wiele prob. Odczekaj chwile i sprobuj ponownie."
+        elif code in (ErrorCode.SERVER_ERROR, ErrorCode.SERVER_OVERLOAD):
+            msg = "Blad serwera. Sprobuj ponownie za chwile."
+
+        self.receiver.stop()
         self.conn.disconnect()
         self.after(0, lambda: self._login_window.show_error(msg))
 

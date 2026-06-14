@@ -268,7 +268,13 @@ class RCMPServer:
         return False
 
     async def _dispatch(self, msg_type: str, data: dict, session: Session, writer):
-        if msg_type == MessageType.LOGIN:
+        if msg_type == MessageType.REGISTER:
+            await handle_register(
+                data, session, self.auth, self.router,
+                self.rate_limiter, self.db_pool
+            )
+
+        elif msg_type == MessageType.LOGIN:
             await handle_login(
                 data, session, self.session_manager,
                 self.auth, self.router, self.rate_limiter
@@ -322,7 +328,7 @@ class RCMPServer:
             await handle_delete_room(data, session, self.router, self.db_pool, self.room_manager)
 
         elif msg_type == MessageType.ROOM_MEMBERS_REQUEST:
-            await handle_room_members(data, session, self.router, self.room_manager, self.session_manager)
+            await handle_room_members(data, session, self.router, self.room_manager, self.session_manager, self.db_pool)
 
         elif msg_type == MessageType.ROOM_KICK:
             await handle_room_kick(data, session, self.router, self.room_manager, self.session_manager)

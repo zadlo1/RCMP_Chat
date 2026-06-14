@@ -125,12 +125,14 @@ async def handle_room_members(
     router: MessageRouter,
     room_manager: RoomManager,
     session_manager: SessionManager,
+    db_pool=None,
 ):
     """
     Obsługuje ROOM_MEMBERS_REQUEST.
-    Zwraca listę użytkowników aktualnie obecnych w pokoju.
-    Dostępne dla każdego członka pokoju.
-    Admin dodatkowo otrzymuje listę zbanowanych użytkowników.
+    Zwraca liste wszystkich uzytkownikow, ktorzy moga wejsc do pokoju
+    (zaproszeni lub z dostepem), wraz z ich aktualnym statusem online/offline.
+    Dostepne dla kazdego czlonka pokoju.
+    Admin dodatkowo otrzymuje liste zbanowanych uzytkownikow.
     """
     msg_id = data.get("msg_id")
     payload = data.get("payload") or {}
@@ -153,18 +155,61 @@ async def handle_room_members(
         return
 
     members = []
-    for user_id in room_manager.get_room_members(room_id):
-        member_session = session_manager.get_by_user_id(user_id)
-        if member_session is None:
-            continue
-        members.append({
-            "user_id": user_id,
-            "username": member_session.username,
-            "role": member_session.role,
-            "status": "online",
-        })
+    if db_pool is not None:
+        if room["is_private"]:
+            # Pokój prywatny — zaproszeni (room_acl) + adminowie, bez zbanowanych, bez siebie
+            rows = await db_pool.fetch(
+                """
+                SELECT DISTINCT u.id AS user_id, u.username, u.role
+                FROM users u
+                LEFT JOIN room_acl a ON a.room_id = $1 AND a.user_id = u.id
+                LEFT JOIN room_bans b ON b.room_id = $1 AND b.user_id = u.id
+                WHERE u.id != $2
+                  AND b.user_id IS NULL
+                  AND (a.user_id IS NOT NULL OR u.role = 'admin')
+                ORDER BY u.username
+                """,
+                room_id, session.user_id
+            )
+        else:
+            # Pokój publiczny — wszyscy użytkownicy poza zbanowanymi i bieżącym
+            rows = await db_pool.fetch(
+                """
+                SELECT u.id AS user_id, u.username, u.role
+                FROM users u
+                LEFT JOIN room_bans b ON b.room_id = $1 AND b.user_id = u.id
+                WHERE u.id != $2
+                  AND b.user_id IS NULL
+                ORDER BY u.username
+                """,
+                room_id, session.user_id
+            )
 
-    members.sort(key=lambda m: m["username"].lower())
+        online_ids = room_manager.get_room_members(room_id)
+        for row in rows:
+            uid = row["user_id"]
+            members.append({
+                "user_id": uid,
+                "username": row["username"],
+                "role": row["role"],
+                "status": "online" if uid in online_ids else "offline",
+            })
+    else:
+        # Fallback: tylko aktywni online (stare zachowanie bez db_pool)
+        online_ids = room_manager.get_room_members(room_id)
+        for user_id in online_ids:
+            if user_id == session.user_id:
+                continue
+            member_session = session_manager.get_by_user_id(user_id)
+            if member_session is None:
+                continue
+            members.append({
+                "user_id": user_id,
+                "username": member_session.username,
+                "role": member_session.role,
+                "status": "online",
+            })
+        members.sort(key=lambda m: m["username"].lower())
 
     response_payload = {
         "room_id": room_id,
