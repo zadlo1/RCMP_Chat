@@ -210,6 +210,11 @@ async def _route_invite(data, session, router, db_pool, payload):
 
     target_user_id = row["id"]
 
+    room_row = await db_pool.fetchrow(
+        "SELECT is_private FROM rooms WHERE id = $1", room_id
+    )
+    is_private = room_row["is_private"] if room_row else True
+
     invite_frame = {
         "type": "ROOM_INVITE",
         "msg_id": str(uuid.uuid4()),
@@ -218,6 +223,7 @@ async def _route_invite(data, session, router, db_pool, payload):
         "payload": {
             "room_id": room_id,
             "room_name": room_name,
+            "is_private": is_private,
             "invited_by": session.username,
         }
     }

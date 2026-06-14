@@ -74,6 +74,7 @@ async def handle_leave_room(
     session: Session,
     router: MessageRouter,
     room_manager: RoomManager,
+    push_rooms_list=None,
 ):
     """
     Obsługuje LEAVE_ROOM od klienta.
@@ -92,11 +93,17 @@ async def handle_leave_room(
     # Pobierz członków przed opuszczeniem (żeby wysłać event)
     members = room_manager.get_room_members(room_id)
 
-    room_manager.leave_room(room_id, session.user_id)
+    # Zapisz wyrzucenie w bazie — opuszczenie pokoju traktujemy jak self-kick:
+    # użytkownik będzie wymagał ponownego zaproszenia, nawet do publicznego pokoju.
+    # kick_user() wewnętrznie wywołuje leave_room(), więc nie trzeba go wywoływać osobno.
+    room = await room_manager.get_room(room_id)
+    if room is not None:
+        await room_manager.kick_user(room_id, session.user_id, session.user_id)
+    else:
+        room_manager.leave_room(room_id, session.user_id)
     session.touch()
 
     # Powiadomienie pozostałych
-    room = await room_manager.get_room(room_id)
     room_name = room["name"] if room else str(room_id)
 
     room_event = {
@@ -113,6 +120,10 @@ async def handle_leave_room(
         }
     }
     await router.send_to_room(members, room_event, exclude_user_id=session.user_id)
+
+    # Odśwież listę pokojów użytkownika — kanał zniknie z paska po lewej
+    if push_rooms_list is not None:
+        await push_rooms_list(session.user_id)
 
 
 # ----------------------------------------------------------------------
@@ -172,14 +183,16 @@ async def handle_room_members(
                 room_id, session.user_id
             )
         else:
-            # Pokój publiczny — wszyscy użytkownicy poza zbanowanymi i bieżącym
+            # Pokój publiczny — wszyscy użytkownicy poza zbanowanymi, wyrzuconymi i bieżącym
             rows = await db_pool.fetch(
                 """
                 SELECT u.id AS user_id, u.username, u.role
                 FROM users u
                 LEFT JOIN room_bans b ON b.room_id = $1 AND b.user_id = u.id
+                LEFT JOIN room_kicks k ON k.room_id = $1 AND k.user_id = u.id
                 WHERE u.id != $2
                   AND b.user_id IS NULL
+                  AND k.user_id IS NULL
                 ORDER BY u.username
                 """,
                 room_id, session.user_id
@@ -291,9 +304,11 @@ async def handle_room_kick(
     router: MessageRouter,
     room_manager: RoomManager,
     session_manager: SessionManager,
+    push_rooms_list=None,
 ):
     """
-    Wyrzuca użytkownika z pokoju (bez bana — może wrócić, jeśli ma dostęp).
+    Wyrzuca użytkownika z pokoju (bez bana).
+    Aby wrócić, użytkownik potrzebuje nowego zaproszenia od admina.
     Tylko admin.
     """
     result = await _moderation_precheck(data, session, router, room_manager, session_manager)
@@ -301,15 +316,20 @@ async def handle_room_kick(
         return
     room, target_session, target_user_id, room_id, msg_id = result
 
-    if not room_manager.is_member(room_id, target_user_id):
+    # Sprawdź czy użytkownik w ogóle ma/miał dostęp do pokoju (online lub offline).
+    # is_member() obejmuje tylko aktywne sesje in-memory; dla offline wystarczy
+    # że nie jest zbanowany i nie jest już wyrzucony — czyli check_access zwraca True.
+    is_online_member = room_manager.is_member(room_id, target_user_id)
+    has_access = await room_manager.check_access(room_id, target_user_id)
+    if not is_online_member and not has_access:
         await router.send_error(session.writer, ErrorCode.USER_NOT_FOUND,
                                 "User is not in this room", msg_id)
         return
 
     target_username = target_session.username if target_session else str(target_user_id)
 
-    # Usuń ze stanu in-memory pokoju
-    room_manager.leave_room(room_id, target_user_id)
+    # Usuń ze stanu in-memory pokoju, zapisz wpis o wyrzuceniu (wymaga ponownego zaproszenia)
+    await room_manager.kick_user(room_id, target_user_id, session.user_id)
 
     # Powiadom resztę pokoju
     members = room_manager.get_room_members(room_id)
@@ -333,6 +353,10 @@ async def handle_room_kick(
     if target_session:
         await router.send_to_user(target_user_id, notify_event)
 
+    # Odśwież listę pokojów wyrzuconego — kanał zniknie z paska po lewej
+    if push_rooms_list is not None:
+        await push_rooms_list(target_user_id)
+
     # Potwierdzenie dla admina
     response = {
         "type": "ROOM_KICK_OK",
@@ -355,6 +379,7 @@ async def handle_room_ban(
     router: MessageRouter,
     room_manager: RoomManager,
     session_manager: SessionManager,
+    push_rooms_list=None,
 ):
     """
     Banuje użytkownika w pokoju — wyrzuca go i blokuje ponowne dołączenie.
@@ -423,6 +448,10 @@ async def handle_room_ban(
     }
     await router._write(session.writer, response)
 
+    # Odśwież listę pokojów zbanowanego — kanał zniknie z paska po lewej
+    if push_rooms_list is not None:
+        await push_rooms_list(target_user_id)
+
 
 async def handle_room_unban(
     data: dict,
@@ -430,6 +459,7 @@ async def handle_room_unban(
     router: MessageRouter,
     room_manager: RoomManager,
     session_manager: SessionManager,
+    push_rooms_list=None,
 ):
     """Usuwa bana użytkownika w pokoju. Tylko admin."""
     result = await _moderation_precheck(data, session, router, room_manager, session_manager)
@@ -454,3 +484,7 @@ async def handle_room_unban(
         }
     }
     await router._write(session.writer, response)
+
+    # Odśwież listę pokojów odbanowanego — kanał wróci na pasek po lewej
+    if push_rooms_list is not None:
+        await push_rooms_list(target_user_id)

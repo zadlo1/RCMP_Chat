@@ -33,7 +33,8 @@ class RoomManager:
         """
         Sprawdza czy użytkownik ma dostęp do pokoju.
         Zbanowani użytkownicy — zawsze False.
-        Pokoje publiczne — zawsze True (jeśli nie zbanowani).
+        Pokoje publiczne — domyślnie True, ale False jeśli użytkownik
+        został z nich wyrzucony (wymaga ponownego zaproszenia).
         Pokoje prywatne — tylko jeśli user_id jest na liście ACL.
         """
         if await self.is_banned(room_id, user_id):
@@ -43,7 +44,7 @@ class RoomManager:
         if room is None:
             return False
         if not room["is_private"]:
-            return True
+            return not await self.is_kicked(room_id, user_id)
         row = await self.db.fetchrow(
             "SELECT 1 FROM room_acl WHERE room_id = $1 AND user_id = $2",
             room_id, user_id
@@ -76,6 +77,12 @@ class RoomManager:
             "DELETE FROM room_acl WHERE room_id = $1 AND user_id = $2",
             room_id, user_id
         )
+        # Ban ma pierwszeństwo — usuń też ewentualny wcześniejszy wpis o wyrzuceniu,
+        # żeby odbanowanie w pełni przywracało dostęp.
+        await self.db.execute(
+            "DELETE FROM room_kicks WHERE room_id = $1 AND user_id = $2",
+            room_id, user_id
+        )
         self.leave_room(room_id, user_id)
 
     async def unban_user(self, room_id: int, user_id: int):
@@ -98,6 +105,47 @@ class RoomManager:
             room_id
         )
         return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Wyrzucanie z pokojów publicznych (kick, bez bana)
+    # ------------------------------------------------------------------
+
+    async def is_kicked(self, room_id: int, user_id: int) -> bool:
+        """Sprawdza czy użytkownik został wyrzucony z pokoju (bez bana)
+        i nie ma jeszcze ponownego zaproszenia."""
+        row = await self.db.fetchrow(
+            "SELECT 1 FROM room_kicks WHERE room_id = $1 AND user_id = $2",
+            room_id, user_id
+        )
+        return row is not None
+
+    async def kick_user(self, room_id: int, user_id: int, kicked_by: int):
+        """
+        Wyrzuca użytkownika z pokoju (bez bana).
+        Aby ponownie dołączyć, użytkownik potrzebuje nowego zaproszenia od admina.
+        """
+        await self.db.execute(
+            """
+            INSERT INTO room_kicks (room_id, user_id, kicked_by)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (room_id, user_id) DO UPDATE
+                SET kicked_by = EXCLUDED.kicked_by, kicked_at = NOW()
+            """,
+            room_id, user_id, kicked_by
+        )
+        # Usuń ewentualny wpis ACL — wyrzucenie unieważnia wcześniejsze zaproszenie.
+        await self.db.execute(
+            "DELETE FROM room_acl WHERE room_id = $1 AND user_id = $2",
+            room_id, user_id
+        )
+        self.leave_room(room_id, user_id)
+
+    async def clear_kick(self, room_id: int, user_id: int):
+        """Usuwa wpis o wyrzuceniu — wywoływane po przyjęciu nowego zaproszenia."""
+        await self.db.execute(
+            "DELETE FROM room_kicks WHERE room_id = $1 AND user_id = $2",
+            room_id, user_id
+        )
 
     # ------------------------------------------------------------------
     # Dołączanie i opuszczanie pokoju
@@ -163,6 +211,44 @@ class RoomManager:
             "SELECT id, name FROM rooms WHERE is_private = FALSE ORDER BY name"
         )
         return [dict(r) for r in rows]
+
+    async def get_rooms_list(self, user_id: int, role: str) -> list[dict]:
+        """
+        Zwraca listę wszystkich pokojów wraz z informacją o tym,
+        czy dany użytkownik ma do nich dostęp (`has_access`).
+
+        - Pokój prywatny: dostęp jeśli wpis w ACL lub rola admina.
+        - Pokój publiczny: dostęp domyślnie True, False jeśli zbanowany
+          lub wyrzucony bez ponownego zaproszenia (admin ma dostęp zawsze).
+        """
+        rows = await self.db.fetch(
+            "SELECT id, name, is_private FROM rooms ORDER BY name"
+        )
+        rooms = []
+        for row in rows:
+            room_id = row["id"]
+
+            if role == "admin":
+                has_access = True
+            elif await self.is_banned(room_id, user_id):
+                has_access = False
+            elif row["is_private"]:
+                acl = await self.db.fetchrow(
+                    "SELECT 1 FROM room_acl WHERE room_id = $1 AND user_id = $2",
+                    room_id, user_id
+                )
+                has_access = acl is not None
+            else:
+                has_access = not await self.is_kicked(room_id, user_id)
+
+            rooms.append({
+                "id": room_id,
+                "name": row["name"],
+                "is_private": row["is_private"],
+                "has_access": has_access,
+            })
+        return rooms
+
     def remove_room(self, room_id: int):
         """Usuwa pokój z pamięci in-memory (po usunięciu z bazy przez admina)."""
         self._room_members.pop(room_id, None)

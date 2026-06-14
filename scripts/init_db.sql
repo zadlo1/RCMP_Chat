@@ -50,6 +50,18 @@ CREATE TABLE IF NOT EXISTS room_bans (
 );
 
 -- ============================================================
+-- Wyrzucenia użytkowników z pokojów publicznych (kick, bez bana)
+-- Wymaga nowego zaproszenia (ROOM_INVITE) aby ponownie dołączyć.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS room_kicks (
+    room_id     INTEGER NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kicked_by   INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    kicked_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (room_id, user_id)
+);
+
+-- ============================================================
 -- Historia wiadomości
 -- ============================================================
 CREATE TABLE IF NOT EXISTS messages (
@@ -93,6 +105,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_msg_id  ON messages(msg_id);
 CREATE INDEX IF NOT EXISTS idx_nonces_used_at   ON used_nonces(used_at);
 CREATE INDEX IF NOT EXISTS idx_logs_event       ON system_logs(event, logged_at);
 CREATE INDEX IF NOT EXISTS idx_room_bans_room   ON room_bans(room_id);
+CREATE INDEX IF NOT EXISTS idx_room_kicks_room  ON room_kicks(room_id);
 
 -- ============================================================
 -- Domyślne pokoje publiczne

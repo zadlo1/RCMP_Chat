@@ -40,6 +40,7 @@ class RCMPApp(ctk.CTk):
         self._tls_version: str = "TLS"
         self._user_role: str = "user"
         self._pending_rooms: list = []
+        self._accessible_room_ids: set = set()
         self._members_dialog = None
         self._members_dialog_room_id: int = None
         self._admin_panel = None
@@ -272,9 +273,8 @@ class RCMPApp(ctk.CTk):
                     _app._current_room_id = None
                     _app._current_room_name = None
                     _app._chat.room_left(room_id)
-                if event == "banned":
-                    _app._chat.remove_room(room_id)
-                    _app._available_rooms.pop(room_id, None)
+                _app._chat.remove_room(room_id)
+                _app._accessible_room_ids.discard(room_id)
                 _app._chat.add_system_message(text, room_id=room_id)
             elif event == "deleted" and room_id is not None:
                 if _app._current_room_id == room_id:
@@ -318,18 +318,36 @@ class RCMPApp(ctk.CTk):
             r["id"]: {"name": r["name"], "is_private": r["is_private"]}
             for r in rooms
         }
-        self._pending_rooms = [r for r in rooms if r.get("has_access", True)]
-        # Jeśli chat już istnieje — dodaj od razu, jeśli nie — doda _show_chat
+        pending = [r for r in rooms if r.get("has_access", True)]
+        new_accessible = {r["id"] for r in pending}
+        lost_access = self._accessible_room_ids - new_accessible
+        self._accessible_room_ids = new_accessible
+
+        # Jeśli chat już istnieje — od razu zaktualizuj sidebar,
+        # jeśli nie — _show_chat doda pokoje z _pending_rooms
         if self._chat:
-            for r in self._pending_rooms:
+            for room_id in lost_access:
+                self.after(0, lambda rid=room_id: self._remove_room_from_sidebar(rid))
+            for r in pending:
                 self.after(0, lambda room=r: self._chat.add_room(
                     room["id"], room["name"], room["is_private"]
                 ))
+        else:
+            self._pending_rooms = pending
+
+    def _remove_room_from_sidebar(self, room_id: int):
+        """Usuwa pokój z paska po lewej (np. po banie/wyrzuceniu — utrata dostępu)."""
+        if self._current_room_id == room_id:
+            self._current_room_id = None
+            self._current_room_name = None
+            self._chat.room_left(room_id)
+        self._chat.remove_room(room_id)
 
     async def _on_room_invite(self, data: dict):
         payload = data.get("payload", {})
         room_id = payload.get("room_id")
         room_name = payload.get("room_name", "?")
+        is_private = payload.get("is_private", True)
         invited_by = payload.get("invited_by", "?")
 
         def accept(_app=self):
@@ -337,8 +355,11 @@ class RCMPApp(ctk.CTk):
                 "ROOM_INVITE_ACCEPT", {"room_id": room_id}
             ))
             _app._available_rooms[room_id] = {
-                "name": room_name, "is_private": True
+                "name": room_name, "is_private": is_private
             }
+            _app._accessible_room_ids.add(room_id)
+            if _app._chat:
+                _app._chat.add_room(room_id, room_name, is_private)
             _app._join_room(room_id)
 
         def decline(_app=self):
@@ -646,7 +667,7 @@ class RCMPApp(ctk.CTk):
                 on_kick=_app._kick_user,
                 on_ban=_app._ban_user,
                 on_unban=_app._unban_user,
-                on_invite=_app._send_invite if is_private else None,
+                on_invite=_app._send_invite if _app._user_role == "admin" else None,
                 on_leave=_app._leave_room_from_dialog,
             )
 
@@ -1183,7 +1204,7 @@ class MembersDialog(ctk.CTkToplevel):
         btn_row = ctk.CTkFrame(self, fg_color="transparent")
         btn_row.pack(fill="x", padx=20, pady=(0, 10))
 
-        if self.is_admin and self.is_private and self.on_invite:
+        if self.is_admin and self.on_invite:
             ctk.CTkButton(
                 btn_row, text="✉  Zaproś", height=32,
                 font=ctk.CTkFont(size=12),

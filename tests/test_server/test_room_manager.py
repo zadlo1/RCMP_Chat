@@ -34,7 +34,9 @@ class TestCheckAccess:
     @pytest.mark.asyncio
     async def test_public_room_grants_access(self):
         room = {"id": 1, "name": "public", "is_private": False}
-        rm, _ = make_manager(rows_fetchrow=room)
+        rm, db = make_manager(rows_fetchrow=room)
+        # Pierwsze fetchrow → zwraca pokój; drugie → brak wpisu o wyrzuceniu (room_kicks)
+        db.fetchrow = AsyncMock(side_effect=[room, None])
         assert await rm.check_access(1, user_id=42) is True
 
     @pytest.mark.asyncio
@@ -62,7 +64,9 @@ class TestJoinLeaveRoom:
     @pytest.mark.asyncio
     async def test_join_public_room(self):
         room = {"id": 1, "name": "general", "is_private": False}
-        rm, _ = make_manager(rows_fetchrow=room)
+        rm, db = make_manager(rows_fetchrow=room)
+        # Pierwsze fetchrow → pokój; drugie → brak wpisu o wyrzuceniu (room_kicks)
+        db.fetchrow = AsyncMock(side_effect=[room, None])
         success = await rm.join_room(1, user_id=5)
         assert success is True
         assert rm.is_member(1, 5)

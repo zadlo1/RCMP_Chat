@@ -104,6 +104,19 @@ class RCMPServer:
                 """
             ),
             (
+                "room_kicks",
+                """
+                CREATE TABLE IF NOT EXISTS room_kicks (
+                    room_id     INTEGER NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+                    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    kicked_by   INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                    kicked_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (room_id, user_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_room_kicks_room ON room_kicks(room_id);
+                """
+            ),
+            (
                 "friendships",
                 """
                 CREATE TABLE IF NOT EXISTS friendships (
@@ -295,7 +308,7 @@ class RCMPServer:
             await handle_join_room(data, session, self.router, self.room_manager)
 
         elif msg_type == MessageType.LEAVE_ROOM:
-            await handle_leave_room(data, session, self.router, self.room_manager)
+            await handle_leave_room(data, session, self.router, self.room_manager, self.push_rooms_list)
 
         elif msg_type == MessageType.SEND_MESSAGE:
             await handle_send_message(
@@ -334,13 +347,13 @@ class RCMPServer:
             await handle_room_members(data, session, self.router, self.room_manager, self.session_manager, self.db_pool)
 
         elif msg_type == MessageType.ROOM_KICK:
-            await handle_room_kick(data, session, self.router, self.room_manager, self.session_manager)
+            await handle_room_kick(data, session, self.router, self.room_manager, self.session_manager, self.push_rooms_list)
 
         elif msg_type == MessageType.ROOM_BAN:
-            await handle_room_ban(data, session, self.router, self.room_manager, self.session_manager)
+            await handle_room_ban(data, session, self.router, self.room_manager, self.session_manager, self.push_rooms_list)
 
         elif msg_type == MessageType.ROOM_UNBAN:
-            await handle_room_unban(data, session, self.router, self.room_manager, self.session_manager)
+            await handle_room_unban(data, session, self.router, self.room_manager, self.session_manager, self.push_rooms_list)
 
         elif msg_type == MessageType.ADMIN_USERS_REQUEST:
             await handle_admin_users_request(data, session, self.router, self.db_pool)
@@ -362,7 +375,7 @@ class RCMPServer:
                                       self.room_manager, self.rate_limiter, self.db_pool)
 
         elif msg_type == MessageType.ROOM_INVITE_ACCEPT:
-            await handle_room_invite_accept(data, session, self.router, self.db_pool)
+            await handle_room_invite_accept(data, session, self.router, self.db_pool, self.room_manager, self.push_rooms_list)
 
         elif msg_type == MessageType.ROOM_INVITE_DECLINE:
             await handle_room_invite_decline(data, session, self.router)
@@ -389,27 +402,7 @@ class RCMPServer:
 
     async def _send_rooms_list(self, session):
         """Wysyła listę dostępnych pokojów po zalogowaniu."""
-        rows = await self.db_pool.fetch(
-            "SELECT id, name, is_private FROM rooms ORDER BY name"
-        )
-        rooms = []
-        for row in rows:
-            # Dla pokojów prywatnych sprawdź ACL
-            if row["is_private"]:
-                acl = await self.db_pool.fetchrow(
-                    "SELECT 1 FROM room_acl WHERE room_id = $1 AND user_id = $2",
-                    row["id"], session.user_id
-                )
-                has_access = acl is not None or session.role == "admin"
-            else:
-                has_access = True
-
-            rooms.append({
-                "id": row["id"],
-                "name": row["name"],
-                "is_private": row["is_private"],
-                "has_access": has_access,
-            })
+        rooms = await self.room_manager.get_rooms_list(session.user_id, session.role)
 
         frame = {
             "type": "ROOMS_LIST",
@@ -419,6 +412,25 @@ class RCMPServer:
             "payload": {"rooms": rooms}
         }
         await self.router._write(session.writer, frame)
+
+    async def push_rooms_list(self, user_id: int):
+        """
+        Wysyła zaktualizowaną listę pokojów do konkretnego użytkownika
+        (np. po banie/odbanowaniu/wyrzuceniu/zaproszeniu), jeśli jest online.
+        """
+        target_session = self.session_manager.get_by_user_id(user_id)
+        if target_session is None or not target_session.is_authenticated():
+            return
+
+        rooms = await self.room_manager.get_rooms_list(user_id, target_session.role)
+        frame = {
+            "type": "ROOMS_LIST",
+            "msg_id": str(uuid.uuid4()),
+            "ts": int(time.time() * 1000),
+            "token": target_session.token,
+            "payload": {"rooms": rooms}
+        }
+        await self.router._write(target_session.writer, frame)
 
     # ------------------------------------------------------------------
     # Timeout sesji
