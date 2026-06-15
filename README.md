@@ -57,7 +57,6 @@ Etap 1 definiował rdzeń protokołu RCMP. Podczas implementacji protokół zost
 
 | Zmiana | Opis |
 |---|---|
-| ➕ `REGISTER` / `REGISTER_OK` / `REGISTER_ERR` | Rejestracja nowych kont użytkowników — w Etapie 1 zakładano predefiniowane konta w bazie |
 | ➕ `ROOMS_LIST` | Dynamiczne pobieranie listy pokojów z serwera zamiast hardcodowania po stronie klienta |
 | ➕ `ROOM_INVITE` / `ROOM_INVITE_ACCEPT` / `ROOM_INVITE_DECLINE` | Zaproszenia do pokojów prywatnych przez GUI (w Etapie 1 ACL zarządzano wyłącznie przez administratora) |
 | ➕ `FRIEND_REQUEST` / `FRIEND_REQUEST_ACCEPT` / `FRIEND_REQUEST_DECLINE` | System znajomych nieobecny w specyfikacji |
@@ -80,7 +79,6 @@ Etap 2 definiował architekturę i przypadki użycia. Implementacja różni się
 | Zmiana | Opis |
 |---|---|
 | ✅ CLI → **GUI (CustomTkinter)** | Etap 2 wskazywał klienta CLI jako MVP. Zamiast tego zaimplementowano desktopowy interfejs graficzny oparty na bibliotece CustomTkinter. Funkcjonalność protokołu pozostaje identyczna — zmiana dotyczy wyłącznie warstwy prezentacji |
-| ✅ Rejestracja kont | W Etapie 2 nie było UC dla rejestracji — system zakładał konta predefiniowane przez admina. Zaimplementowano pełny przepływ rejestracji przez GUI |
 | ✅ System znajomych (DM) | Nie planowany w Etapie 2 — dodany w trakcie implementacji jako naturalne rozszerzenie komunikacji 1:1 |
 | ✅ Moderacja pokojów (kick/ban) | Nie było w UC Etapu 2 — zaimplementowane jako rozszerzenie UC7 |
 | ✅ Tabele `room_bans`, `room_kicks`, `friendships` | Schemat bazy z Etapu 2 (Users, Rooms, Messages, ACL) rozszerzony o trzy nowe tabele |
@@ -1029,6 +1027,5 @@ pytest tests/ --cov=server --cov=client --cov=shared --cov-report=term-missing
 - **`BLOCK_USER`/`UNBLOCK_USER`** jako dedykowane typy wiadomości nie zostały zaimplementowane — flaga `is_blocked` istnieje w schemacie bazy i jest sprawdzana przy logowaniu, ale admin nie może jej zmienić przez protokół (tylko przez bezpośrednią edycję bazy).
 - **Certyfikaty TLS** są self-signed — w środowisku produkcyjnym należy użyć certyfikatu od zaufanego CA. Po stronie klienta ustawione jest `check_hostname=False`, co jest kompromisem dla certyfikatów self-signed; produkcyjnie należy włączyć weryfikację hostname.
 - **Testy integracyjne end-to-end** nie zostały zaimplementowane — brak testu łączącego rzeczywistego klienta z rzeczywistym serwerem bez mocków.
-- **Status `away`** nie jest obsługiwany przez GUI — klient zawsze prezentuje status `online`.
 
 ---
