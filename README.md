@@ -88,9 +88,7 @@ Etap 2 definiował architekturę i przypadki użycia. Implementacja różni się
 | ❌ `BLOCK_USER` / `UNBLOCK_USER` / `FORCE_DISCONNECT` | UC8 z Etapu 2 — **częściowo zrealizowane**: usuwanie kont i wymuszanie rozłączenia działa, dedykowana blokada konta (flaga `is_blocked`) jest w schemacie bazy, ale `BLOCK_USER`/`UNBLOCK_USER` nie są obsługiwane jako osobne typy wiadomości w protokole |
 | ❌ `HISTORY_REQUEST` / `HISTORY_RESPONSE` | Planowane jako rozszerzenie w Etapie 2 — **nie zaimplementowane** |
 
-> **Screenshot:** widok ogólny aplikacji z zalogowanym użytkownikiem i otwartym pokojem  
-> `📸 [SCREENSHOT: okno główne ChatWindow — sidebar z pokojami i znajomymi, obszar czatu]`
-
+![Główny ekran aplikacji](screenshots/main.png)
 ---
 
 ## 3. Protokół RCMP
@@ -516,8 +514,7 @@ python -m client.main
 pytest tests/ -v
 ```
 
-> **Screenshot:** terminal z uruchomionym serwerem i logiem połączeń  
-> `📸 [SCREENSHOT: konsola serwera — logi: klient połączony, LOGIN_OK, JOIN_ROOM]`
+![Logi serwera](screenshots/server_log.png)
 
 ---
 
@@ -527,11 +524,7 @@ pytest tests/ -v
 
 Ekran startowy zawiera pola `username` i `password` oraz przyciski **Zaloguj** i **Zarejestruj**. Błędy logowania wyświetlane są jako czerwony komunikat pod formularzem.
 
-> **Screenshot:** okno logowania  
-> `📸 [SCREENSHOT: LoginWindow — pola username/password, przyciski Zaloguj i Zarejestruj]`
-
-> **Screenshot:** błąd logowania (np. złe hasło)  
-> `📸 [SCREENSHOT: LoginWindow — komunikat błędu LOGIN_ERR pod formularzem]`
+![Login Window](screenshots/login_window.png)
 
 ### Główne okno czatu (ChatWindow)
 
@@ -540,55 +533,33 @@ Podzielone na dwie sekcje:
 - **Sidebar (lewy panel)** — lista pokojów z przyciskiem `+` do przeglądania/dołączania, sekcja `ZNAJOMI` z kolorowymi wskaźnikami statusu (🟢 online, 🟡 away, ⚫ offline).
 - **Obszar czatu (prawy panel)** — historia wiadomości bieżącego pokoju z bąbelkami, pole tekstowe i przycisk wysyłania.
 
-> **Screenshot:** pełne okno czatu z aktywnym pokojem  
-> `📸 [SCREENSHOT: ChatWindow — sidebar z pokojami i znajomymi, bąbelki wiadomości w obszarze czatu]`
+![Główny ekran aplikacji](screenshots/chat_room.png)
 
-> **Screenshot:** placeholder braku pokoju  
-> `📸 [SCREENSHOT: ChatWindow — centralny komunikat "💬 Dołącz do pokoju" gdy użytkownik nie jest w żadnym pokoju]`
+### Widok użytkowników i zapraszanie do pokoju
 
-### Dialog przeglądania pokojów
+Aplikacja udostępnia listę aktualnie dostępnych użytkowników online. Użytkownik może przeglądać aktywnych uczestników oraz inicjować zaproszenie do prywatnego pokoju rozmów.
 
-Lista dostępnych pokojów z możliwością dołączenia. Dla roli `admin` przy pokojach prywatnych widoczny przycisk `✉` do wysyłania zaproszeń.
+Po wysłaniu zaproszenia odbiorca otrzymuje okno dialogowe umożliwiające zaakceptowanie lub odrzucenie zaproszenia. Po zaakceptowaniu obaj użytkownicy zostają przeniesieni do prywatnego pokoju, w którym mogą prowadzić rozmowę.
 
-> **Screenshot:** dialog listy pokojów  
-> `📸 [SCREENSHOT: BrowseRoomsDialog — lista pokojów, przycisk dołącz, przycisk zaproszenia przy pokoju prywatnym]`
+#### Widok użytkowników
 
-### Zaproszenia do pokojów prywatnych
+![Users View](screenshots/users_view.png)
 
-Użytkownik z rolą `admin` może zaprosić innego użytkownika online do pokoju prywatnego. Zaproszony widzi dialog z przyciskami **Akceptuj** / **Odrzuć**.
+#### Akceptacja zaproszenia do pokoju
 
-> **Screenshot:** dialog zaproszenia do pokoju  
-> `📸 [SCREENSHOT: InviteDialog — powiadomienie o zaproszeniu z przyciskami Akceptuj/Odrzuć]`
-
-### System znajomych
-
-Kliknięcie pseudonimu użytkownika w czacie (pseudonim jest podkreślony i klikalny) otwiera dialog **Dodaj znajomego**. Po akceptacji zaproszenia znajomy pojawia się w sidebarze z aktualnym statusem.
-
-> **Screenshot:** lista znajomych w sidebarze z różnymi statusami  
-> `📸 [SCREENSHOT: sidebar — sekcja ZNAJOMI z wskaźnikami 🟢🟡⚫]`
+![Invite Accept](screenshots/invite_accept.png)
 
 ### Direct Messages (DM)
 
 Kliknięcie znajomego otwiera okno DM z historią rozmowy prywatnej. Okno minimalizuje się zamiast zamykać — historia wiadomości dostępna po ponownym otwarciu.
 
-> **Screenshot:** okno DM  
-> `📸 [SCREENSHOT: okno Direct Message z historią wiadomości 1:1]`
+![Direct Message](screenshots/dm.png)
 
 ### Panel administracyjny
 
 Dostępny wyłącznie dla roli `admin`. Umożliwia przeglądanie wszystkich użytkowników, zmianę ról (user/admin) i usuwanie kont. Usuniętemu użytkownikowi wyświetlane jest powiadomienie `ACCOUNT_DELETED` i sesja jest zamykana.
 
-> **Screenshot:** panel administracyjny użytkowników  
-> `📸 [SCREENSHOT: AdminPanel — tabela użytkowników z kolumnami id/username/role/status, przyciski Zmień rolę / Usuń]`
-
-### Wiadomości nie wysłane
-
-Jeśli użytkownik opuścił pokój po wysłaniu wiadomości, bąbelek wyświetlany jest z ciemnoczerwonym tłem i komunikatem `⚠ Nie wysłano — opuściłeś pokój`.
-
-> **Screenshot:** bąbelek nie wysłanej wiadomości  
-> `📸 [SCREENSHOT: obszar czatu — bąbelek z czerwonym tłem i komunikatem ostrzeżenia]`
-
----
+![Admin Panel](screenshots/admin_panel.png)
 
 ## 10. Przypadki użycia
 
@@ -996,8 +967,7 @@ pytest tests/test_client/test_sender.py -v
 pytest tests/ --cov=server --cov=client --cov=shared --cov-report=term-missing
 ```
 
-> **Screenshot:** wynik `pytest -v` w terminalu  
-> `📸 [SCREENSHOT: terminal — pytest -v z listą 174 testów i statusem PASSED]`
+![Pytest results](screenshots/pytest.png)
 
 ---
 
