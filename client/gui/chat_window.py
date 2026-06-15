@@ -1,7 +1,10 @@
+import logging
+
 import customtkinter as ctk
 import time
 from client.gui.widgets import MessageBubble, SystemMessage, RoomListItem, UserListItem, StatusBar, FriendListItem
 
+logger = logging.getLogger("rcmp.client.gui.chat_window")
 
 class ChatWindow(ctk.CTkFrame):
 
@@ -422,7 +425,7 @@ class ChatWindow(ctk.CTkFrame):
 
     def set_friends(self, friends: list):
         """Odświeża listę znajomych."""
-        print(f"[CHAT_WINDOW] set_friends wywołane z {len(friends)} znajomymi")
+        logger.debug("[CHAT_WINDOW] set_friends wywołane z %d znajomymi", len(friends))
         for widget in self._friends_frame.winfo_children():
             widget.destroy()
         self._friend_items.clear()
@@ -437,7 +440,7 @@ class ChatWindow(ctk.CTkFrame):
             uname = f["username"]
             status = f.get("status", "offline")
             pending = f.get("friendship_status") == "pending"
-            print(f"[CHAT_WINDOW] Dodawanie znajomego: {uname}, status={status}, pending={pending}")
+            logger.debug("[CHAT_WINDOW] Dodawanie znajomego: %s, status=%s, pending=%s", uname, status, pending)
             item = FriendListItem(
                 self._friends_frame,
                 username=uname,
@@ -448,7 +451,7 @@ class ChatWindow(ctk.CTkFrame):
             )
             item.pack(fill="x", pady=1)
             self._friend_items[uname] = item
-        print(f"[CHAT_WINDOW] Dodano {len(self._friend_items)} znajomych do GUI")
+        logger.debug("[CHAT_WINDOW] Dodano %d znajomych do GUI", len(self._friend_items))
 
     def update_friend_status(self, username: str, status: str):
         item = self._friend_items.get(username)

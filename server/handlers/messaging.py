@@ -1,7 +1,10 @@
+import logging
 import uuid
 import time
 
 from server.session import Session
+
+logger = logging.getLogger("rcmp.server.messaging")
 from server.managers.message_router import MessageRouter
 from server.managers.room_manager import RoomManager
 from server.managers.rate_limiter import RateLimiter
@@ -52,7 +55,8 @@ async def handle_send_message(
 
     # Weryfikacja HMAC
     if not verify_hmac(session.hmac_secret, msg_id, data["ts"], seq_id, body, hmac_received):
-        print(f"[HMAC] FAILED for {session.username}: target_type={target_type}, target_id={target_id}, body={body[:50]}, hmac={hmac_received[:20]}...")
+        logger.warning("HMAC FAILED for %s: target_type=%s, target_id=%s, body=%.50s, hmac=%.20s...",
+                       session.username, target_type, target_id, body, hmac_received)
         await router.send_error(session.writer, ErrorCode.INVALID_HMAC,
                                 ErrorCode.get_message(ErrorCode.INVALID_HMAC), msg_id)
         return

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import ssl
 import uuid
 import time
@@ -34,6 +35,8 @@ from shared.message_types import MessageType
 from shared.schemas import validate_envelope
 from shared.error_codes import ErrorCode
 
+logger = logging.getLogger("rcmp.server")
+
 
 class RCMPServer:
 
@@ -67,7 +70,7 @@ class RCMPServer:
 
         # Reset statusów — przy starcie serwera wszyscy są offline
         await self.db_pool.execute("UPDATE users SET status = 'offline'")
-        print("[RCMP] Statusy użytkowników zresetowane do offline")
+        logger.info("Statusy użytkowników zresetowane do offline")
 
         ssl_ctx = self._build_ssl_context()
 
@@ -82,7 +85,7 @@ class RCMPServer:
         asyncio.create_task(self._session_timeout_loop())
 
         addr = server.sockets[0].getsockname()
-        print(f"[RCMP] Serwer nasłuchuje na {addr[0]}:{addr[1]} (TLS)")
+        logger.info("Serwer nasłuchuje na %s:%s (TLS)", addr[0], addr[1])
 
         async with server:
             await server.serve_forever()
@@ -141,7 +144,7 @@ class RCMPServer:
             )
             if not exists:
                 await self.db_pool.execute(sql)
-                print(f"[RCMP] Migracja: utworzono tabelę '{table_name}'")
+                logger.info("Migracja: utworzono tabelę '%s'", table_name)
             else:
                 # Upewnij się że indeksy też istnieją (idempotentne)
                 await self.db_pool.execute(sql)
@@ -165,7 +168,7 @@ class RCMPServer:
             return
 
         session = self.session_manager.create_session(writer, ip)
-        print(f"[RCMP] Nowe połączenie: {ip}")
+        logger.info("Nowe połączenie: %s", ip)
 
         # Timeout logowania
         try:
@@ -174,7 +177,7 @@ class RCMPServer:
                 timeout=None
             )
         except Exception as e:
-            print(f"[RCMP] Błąd klienta {ip}: {e}")
+            logger.error("Błąd klienta %s: %s", ip, e, exc_info=True)
         finally:
             await self._cleanup(session, ip)
 
@@ -191,7 +194,7 @@ class RCMPServer:
                 chunk = await asyncio.wait_for(reader.read(4096), timeout=timeout)
             except asyncio.TimeoutError:
                 if session.state in ("CONNECTED", "AUTHENTICATING"):
-                    print(f"[RCMP] Timeout logowania: {session.ip}")
+                    logger.warning("Timeout logowania: %s", session.ip)
                     break
                 chunk = b""
 
@@ -227,7 +230,7 @@ class RCMPServer:
             await self.router.send_error(writer, ErrorCode.MALFORMED_ENVELOPE,
                                          ErrorCode.get_message(ErrorCode.MALFORMED_ENVELOPE))
             if errors >= 3:
-                print(f"[RCMP] Zbyt wiele błędów formatu: {session.ip}")
+                logger.warning("Zbyt wiele błędów formatu: %s", session.ip)
                 return True
             return False
 
@@ -268,7 +271,7 @@ class RCMPServer:
         try:
             await self._dispatch(msg_type, data, session, writer)
         except Exception as e:
-            print(f"[RCMP] Błąd handlera '{msg_type}' dla {session.ip}: {e}")
+            logger.error("Błąd handlera '%s' dla %s: %s", msg_type, session.ip, e, exc_info=True)
             try:
                 await self.router.send_error(
                     writer, ErrorCode.SERVER_ERROR,
@@ -369,7 +372,6 @@ class RCMPServer:
                 data, session, self.router, self.db_pool, self.session_manager
             )
 
-
         elif msg_type == MessageType.DIRECT_MESSAGE:
             await handle_send_message(data, session, self.router,
                                       self.room_manager, self.rate_limiter, self.db_pool)
@@ -442,7 +444,7 @@ class RCMPServer:
             await asyncio.sleep(10)
             timed_out = self.session_manager.get_timed_out(Config.TIMEOUT_SESSION)
             for session in timed_out:
-                print(f"[RCMP] Timeout sesji: {session.username} ({session.ip})")
+                logger.warning("Timeout sesji: %s (%s)", session.username, session.ip)
                 await self.router.send_error(
                     session.writer, ErrorCode.UNAUTHORIZED, "Session expired"
                 )
@@ -480,6 +482,11 @@ class RCMPServer:
 # ------------------------------------------------------------------
 
 async def main():
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
     server = RCMPServer()
     await server.start()
 

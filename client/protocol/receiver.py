@@ -1,9 +1,12 @@
 import asyncio
 import json
+import logging
 from typing import Callable, Awaitable
 
 from client.protocol.connection import RCMPConnection
 from server.config import Config
+
+logger = logging.getLogger("rcmp.client.receiver")
 
 
 class RCMPReceiver:
@@ -44,13 +47,17 @@ class RCMPReceiver:
             except asyncio.TimeoutError:
                 # Brak danych przez dłużej niż PING_INTERVAL + PONG timeout
                 # — połączenie prawdopodobnie zerwane
+                logger.warning("Timeout odbioru — brak danych przez %ds",
+                               Config.PING_INTERVAL + Config.TIMEOUT_PONG + 5)
                 self.conn.connected = False
                 break
-            except (ConnectionResetError, OSError):
+            except (ConnectionResetError, OSError) as e:
+                logger.warning("Błąd odbioru: %s", e)
                 self.conn.connected = False
                 break
 
             if not chunk:
+                logger.info("Serwer zamknął połączenie")
                 self.conn.connected = False
                 break
 
@@ -58,7 +65,7 @@ class RCMPReceiver:
 
             # Zabezpieczenie przed przepełnieniem bufora
             if len(buffer) > Config.MAX_MESSAGE_SIZE:
-                print("[RECEIVER] Bufor przekroczył 64KB — rozłączenie")
+                logger.error("Bufor przekroczył 64 KB — rozłączenie")
                 self.conn.connected = False
                 break
 
@@ -78,8 +85,8 @@ class RCMPReceiver:
     async def _process(self, raw: bytes):
         try:
             data = json.loads(raw.decode("utf-8"))
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            print("[RECEIVER] Błąd parsowania JSON")
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            logger.warning("Błąd parsowania JSON: %s", e)
             return
 
         msg_type = data.get("type")
@@ -94,6 +101,6 @@ class RCMPReceiver:
                 else:
                     handler(data)
             except Exception as e:
-                print(f"[RECEIVER] Błąd handlera {msg_type}: {e}")
+                logger.error("Błąd handlera %s: %s", msg_type, e, exc_info=True)
         else:
-            print(f"[RECEIVER] Brak handlera dla: {msg_type}")
+            logger.debug("Brak handlera dla: %s", msg_type)

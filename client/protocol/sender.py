@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import uuid
 import time
 import hmac
@@ -7,6 +8,8 @@ import hashlib
 
 from client.protocol.connection import RCMPConnection
 from server.config import Config
+
+logger = logging.getLogger("rcmp.client.sender")
 
 
 class RCMPSender:
@@ -169,12 +172,12 @@ class RCMPSender:
                 continue
 
             if attempts >= Config.MESSAGE_RETRANSMIT_MAX:
-                print(f"[SENDER] Brak ACK po {attempts} próbach: {msg_id[:8]}...")
+                logger.warning("Brak ACK po %d próbach: %s...", attempts, msg_id[:8])
                 to_remove.append(msg_id)
                 continue
 
             # Retransmisja z tym samym msg_id, seq_id i ts (ts musi być niezmieniony — HMAC go obejmuje)
-            print(f"[SENDER] Retransmisja ({attempts+1}): {msg_id[:8]}...")
+            logger.info("Retransmisja (%d): %s...", attempts + 1, msg_id[:8])
             await self._write(frame)
             self._pending_acks[msg_id] = (frame, attempts + 1, time.time())
 
@@ -193,7 +196,8 @@ class RCMPSender:
             data = json.dumps(frame, ensure_ascii=False) + "\n"
             self.conn.writer.write(data.encode("utf-8"))
             await self.conn.writer.drain()
-        except (ConnectionResetError, BrokenPipeError, OSError):
+        except (ConnectionResetError, BrokenPipeError, OSError) as e:
+            logger.warning("Błąd zapisu do gniazda: %s", e)
             self.conn.connected = False
 
     def _compute_hmac(self, msg_id: str, ts: int, seq_id: int, body: str) -> str:

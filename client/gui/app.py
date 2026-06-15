@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import threading
 import customtkinter as ctk
 
@@ -9,6 +10,8 @@ from client.gui.login_window import LoginWindow
 from client.gui.chat_window import ChatWindow
 from client.gui.widgets import MemberListItem, BannedUserItem, AdminUserListItem, AdminRoomListItem
 from server.config import Config
+
+logger = logging.getLogger("rcmp.client.gui.app")
 
 
 ctk.set_appearance_mode("dark")
@@ -376,7 +379,7 @@ class RCMPApp(ctk.CTk):
         payload = data.get("payload", {})
         code = payload.get("code")
         msg = payload.get("message", "Błąd serwera")
-        print(f"[APP] ERROR {code}: {msg}")
+        logger.warning("ERROR %s: %s", code, msg)
 
         if not self._chat:
             # Błąd przed zalogowaniem — pokaż w oknie logowania
@@ -442,16 +445,14 @@ class RCMPApp(ctk.CTk):
         payload = data.get("payload", {})
         friends = payload.get("friends", [])
         self._friends_cache = friends
-        print(f"[APP] Otrzymano FRIENDS_LIST: {len(friends)} znajomych, _chat={self._chat is not None}")
-        for f in friends:
-            print(f"  - {f['username']}: {f.get('friendship_status')}, {f.get('status')}")
+        logger.debug("Otrzymano FRIENDS_LIST: %d znajomych, _chat=%s", len(friends), self._chat is not None)
 
         def update_friends(_app=self):
             if _app._chat:
-                print(f"[APP] Wywołuję _chat.set_friends z {len(friends)} znajomymi")
+                logger.debug("Wywołuję _chat.set_friends z %d znajomymi", len(friends))
                 _app._chat.set_friends(friends)
             else:
-                print("[APP] _chat jeszcze nie istnieje, zapisuję do _pending_friends")
+                logger.debug("_chat jeszcze nie istnieje, zapisuję do _pending_friends")
                 _app._pending_friends = friends
 
         self.after(0, lambda: update_friends())

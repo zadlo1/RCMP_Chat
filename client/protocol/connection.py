@@ -1,8 +1,11 @@
 import asyncio
+import logging
 import ssl
 import time
 
 from server.config import Config
+
+logger = logging.getLogger("rcmp.client.connection")
 
 
 class RCMPConnection:
@@ -42,6 +45,7 @@ class RCMPConnection:
             self._backoff_idx = 0
             return True
         except (ConnectionRefusedError, OSError, asyncio.TimeoutError) as e:
+            logger.warning("Błąd połączenia z %s:%s — %s", host, port, e)
             self.connected = False
             return False
 
@@ -51,7 +55,7 @@ class RCMPConnection:
         """
         delay = self.BACKOFF[min(self._backoff_idx, len(self.BACKOFF) - 1)]
         self._backoff_idx += 1
-        print(f"[RCMP] Reconnect za {delay}s...")
+        logger.info("Reconnect za %ds...", delay)
         await asyncio.sleep(delay)
         return await self.connect(host, port)
 

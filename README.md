@@ -714,7 +714,7 @@ Klient wysyła `username + password + nonce`. Hasło nigdy nie jest eksponowane 
 
 ### Przegląd pokrycia
 
-Testy jednostkowe obejmują **111 przypadków testowych** w 5 plikach testowych. Klient nie ma jeszcze testów jednostkowych (pliki `test_connection.py` i `test_sender.py` są placeholderami).
+Testy jednostkowe obejmują **174 przypadki testowe** w 7 plikach testowych.
 
 | Plik | Moduł | Liczba testów |
 |---|---|---|
@@ -723,7 +723,9 @@ Testy jednostkowe obejmują **111 przypadków testowych** w 5 plikach testowych.
 | `test_rate_limiter.py` | `RateLimiter` | 19 |
 | `test_room_manager.py` | `RoomManager` | 17 |
 | `test_admin.py` | handlery admin | 28 |
-| **Razem** | | **111** |
+| `test_connection.py` | `RCMPConnection` | 27 |
+| `test_sender.py` | `RCMPSender` | 36 |
+| **Razem** | | **174** |
 
 ### test_auth.py — AuthManager (22 testy)
 
@@ -973,22 +975,29 @@ Testy jednostkowe obejmują **111 przypadków testowych** w 5 plikach testowych.
 
 ### Uruchomienie testów
 
+Testy klienta używają `pytest-asyncio` (wymaganie dodane do `requirements.txt`).
+
 ```bash
-# Wszystkie testy
+# Wszystkie testy (serwer + klient)
 pytest tests/ -v
 
 # Tylko testy serwera
 pytest tests/test_server/ -v
 
+# Tylko testy klienta
+pytest tests/test_client/ -v
+
 # Konkretny moduł
 pytest tests/test_server/test_auth.py -v
+pytest tests/test_client/test_connection.py -v
+pytest tests/test_client/test_sender.py -v
 
 # Z raportem pokrycia (jeśli zainstalowany pytest-cov)
-pytest tests/ --cov=server --cov=shared --cov-report=term-missing
+pytest tests/ --cov=server --cov=client --cov=shared --cov-report=term-missing
 ```
 
 > **Screenshot:** wynik `pytest -v` w terminalu  
-> `📸 [SCREENSHOT: terminal — pytest -v z listą 111 testów i statusem PASSED]`
+> `📸 [SCREENSHOT: terminal — pytest -v z listą 174 testów i statusem PASSED]`
 
 ---
 
@@ -997,6 +1006,90 @@ pytest tests/ --cov=server --cov=shared --cov-report=term-missing
 - **Historia wiadomości** przechowywana wyłącznie w pamięci klienta — po restarcie jest tracona. Planowane rozszerzenie `HISTORY_REQUEST`/`HISTORY_RESPONSE` nie zostało zaimplementowane.
 - **Zaproszenia do pokojów i znajomych** działają tylko dla użytkowników online — zaproszenia dla offline użytkowników nie są kolejkowane.
 - **`BLOCK_USER`/`UNBLOCK_USER`** jako dedykowane typy wiadomości nie zostały zaimplementowane — flaga `is_blocked` istnieje w schemacie bazy i jest sprawdzana przy logowaniu, ale admin nie może jej zmienić przez protokół (tylko przez bezpośrednią edycję bazy).
-- **Certyfikaty TLS** są self-signed — w środowisku produkcyjnym należy użyć certyfikatu od zaufanego CA.
-- **Testy klienta** (`test_connection.py`, `test_sender.py`) są placeholderami — pokrycie testami dotyczy wyłącznie serwera.
+- **Certyfikaty TLS** są self-signed — w środowisku produkcyjnym należy użyć certyfikatu od zaufanego CA. Po stronie klienta ustawione jest `check_hostname=False`, co jest kompromisem dla certyfikatów self-signed; produkcyjnie należy włączyć weryfikację hostname.
+- **Testy integracyjne end-to-end** nie zostały zaimplementowane — brak testu łączącego rzeczywistego klienta z rzeczywistym serwerem bez mocków.
 - **Status `away`** nie jest obsługiwany przez GUI — klient zawsze prezentuje status `online`.
+
+---
+
+## 15. Zmiany wprowadzone po wstępnej ocenie
+
+### 15.1 Testy modułów klienta
+
+Uzupełniono wcześniej puste pliki testów klienta (`test_connection.py`, `test_sender.py`) o łącznie **63 testy jednostkowe** pokrywające całą logikę warstwy protokołu po stronie klienta (bez GUI i bez rzeczywistego połączenia sieciowego):
+
+| Plik | Moduł | Liczba testów |
+|---|---|---|
+| `test_connection.py` | `RCMPConnection` | 27 |
+| `test_sender.py` | `RCMPSender` | 36 |
+| **Razem (nowe)** | | **63** |
+
+**`test_connection.py` — RCMPConnection (27 testów)**
+
+| Klasa | Testowane scenariusze |
+|---|---|
+| `TestIsConnected` | stan początkowy, writer None, flaga connected, kombinacje |
+| `TestDisconnect` | ustawienie flagi, wywołanie `writer.close()`, brak writera, OSError przy close |
+| `TestBackoff` | wartości sekwencji BACKOFF, reset, ograniczenie do max 60 s |
+| `TestConnect` | sukces (mock), ConnectionRefusedError, TimeoutError, OSError, reset backoff |
+| `TestReconnect` | inkrementacja idx, poprawna sekwencja opóźnień, sukces, ograniczenie do 60 s |
+| `TestGetTlsVersion` | brak writera, wersja z ssl_object, fallback przy wyjątku, ssl_object=None |
+
+**`test_sender.py` — RCMPSender (36 testów)**
+
+| Klasa | Testowane scenariusze |
+|---|---|
+| `TestSend` | UUID v4, wymagane pola ramki, pusty payload, brak wysyłki gdy rozłączony, unikalność msg_id, timestamp ms, `\n` na końcu, BrokenPipe |
+| `TestSendLogin` | typ ramki, obecność username/password/nonce, format hex nonce, unikalność nonce |
+| `TestSendMessage` | typ, payload (target_type/id/body/seq_id/hmac), inkrementacja seq_id, rejestracja w _pending_acks, HMAC z/bez secretu |
+| `TestComputeHmac` | format hex SHA-256, deterministyczność, wrażliwość na body/secret, pusty wynik bez secretu |
+| `TestAckAndRetransmission` | usunięcie z pending po confirm, brak błędu dla nieznanego ID, retransmisja po timeout, brak retransmisji przed timeout, usunięcie po max próbach, inkrementacja licznika prób |
+| `TestHelperSendMethods` | PING, BYE, MESSAGE_ACK, JOIN_ROOM, LEAVE_ROOM, DELETE_USER, SET_USER_ROLE, ROOM_KICK, ROOM_BAN, ROOM_UNBAN |
+
+Łączna liczba testów po uzupełnieniu: **111 (serwer) + 63 (klient) = 174**.
+
+### 15.2 Zastąpienie `print()` modułem `logging`
+
+Wszystkie wywołania `print()` w kodzie serwera i klienta zostały zastąpione modułem `logging` ze standardowej biblioteki Pythona. Zmiany objęły pliki:
+
+| Plik | Poziomy logowania |
+|---|---|
+| `server/main.py` | `INFO` (start, migracje, połączenia), `WARNING` (timeouty, błędy formatu), `ERROR` (błędy handlerów z `exc_info=True`) |
+| `server/handlers/messaging.py` | `WARNING` (błąd HMAC) |
+| `client/protocol/connection.py` | `INFO` (reconnect), `WARNING` (błędy połączenia) |
+| `client/protocol/sender.py` | `INFO` (retransmisja), `WARNING` (brak ACK, błąd gniazda) |
+| `client/protocol/receiver.py` | `INFO` (zamknięcie połączenia), `WARNING` (timeout, błąd odbioru, bufor), `ERROR` (błąd handlera z `exc_info=True`), `DEBUG` (brak handlera) |
+| `client/gui/app.py` | `WARNING` (błędy serwera), `DEBUG` (zdarzenia GUI) |
+| `client/gui/chat_window.py` | `DEBUG` (zdarzenia GUI) |
+
+Punkt wejścia (`server/main.py → main()`) konfiguruje `logging.basicConfig` z formatem:
+```
+2026-06-15 12:34:56 [WARNING] rcmp.server: Timeout logowania: 192.168.1.5
+```
+
+Korzyści praktyczne:
+- możliwość przekierowania logów do pliku przez `--log-file` lub konfigurację `logging` bez zmian w kodzie,
+- wyciszenie logów `DEBUG` w środowisku produkcyjnym przez ustawienie `level=logging.WARNING`,
+- błędy handlerów logowane z pełnym traceback (`exc_info=True`) — ułatwia diagnozowanie bugów,
+- separacja logów serwera (`rcmp.server.*`) od klienta (`rcmp.client.*`) — można filtrować niezależnie.
+
+Uruchomienie serwera z bardziej szczegółowym logowaniem:
+
+```bash
+# Domyślne (INFO)
+python -m server.main
+
+# Verbose (DEBUG) — widać wszystkie zdarzenia GUI i brakujące handlery
+LOG_LEVEL=DEBUG python -m server.main
+
+# Tylko ostrzeżenia i błędy
+LOG_LEVEL=WARNING python -m server.main
+```
+
+Aby użyć `LOG_LEVEL` z env, można opcjonalnie dodać na początku `main()`:
+
+```python
+import os
+log_level = getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO)
+logging.basicConfig(level=log_level, ...)
+```
