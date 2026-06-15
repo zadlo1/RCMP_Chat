@@ -72,7 +72,6 @@ Etap 1 definiował rdzeń protokołu RCMP. Podczas implementacji protokół zost
 | ➕ `ACCOUNT_DELETED` / `ROLE_CHANGED` | Powiadomienia push do klienta o zmianach administracyjnych |
 | ➕ Nowe kody błędów | `4033 SELF_ACTION_FORBIDDEN`, `4043 ROOM_BANNED`, `4044 LAST_ADMIN`, `4091 USERNAME_TAKEN`, `4092 USERNAME_INVALID`, `4093 INVALID_ROLE` |
 | ❌ `HISTORY_REQUEST` / `HISTORY_RESPONSE` | Planowane w Etapie 1 jako rozszerzenie — **nie zaimplementowane**; historia przechowywana wyłącznie w pamięci klienta |
-| ❌ `STATUS` (zmiana statusu) | Zdefiniowany w Etapie 1, nie obsługiwany przez GUI klienta w tej wersji |
 
 ### Co się zmieniło względem Etapu 2 (projekt aplikacji)
 
