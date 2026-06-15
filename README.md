@@ -256,6 +256,33 @@ Jeśli klient nie otrzyma `MESSAGE_ACK` w ciągu 5 s, ponawia `SEND_MESSAGE` z t
 
 GUI działa w głównym wątku Tkintera, a protokół RCMP w osobnym wątku z własną pętlą asyncio. Komunikacja między wątkami odbywa się przez `asyncio.run_coroutine_threadsafe` (GUI → asyncio) oraz `self.after(0, callback)` (asyncio → GUI).
 
+
+### Logowanie zdarzeń
+
+Kod serwera i klienta używa modułu `logging` ze standardowej biblioteki Pythona. Punkt wejścia serwera (`server/main.py → main()`) konfiguruje `logging.basicConfig` z formatem:
+
+```
+2026-06-15 12:34:56 [WARNING] rcmp.server: Timeout logowania: 192.168.1.5
+```
+
+| Plik | Poziomy logowania |
+|---|---|
+| `server/main.py` | `INFO` (start, migracje, połączenia), `WARNING` (timeouty, błędy formatu), `ERROR` (błędy handlerów z `exc_info=True`) |
+| `server/handlers/messaging.py` | `WARNING` (błąd HMAC) |
+| `client/protocol/connection.py` | `INFO` (reconnect), `WARNING` (błędy połączenia) |
+| `client/protocol/sender.py` | `INFO` (retransmisja), `WARNING` (brak ACK, błąd gniazda) |
+| `client/protocol/receiver.py` | `INFO` (zamknięcie połączenia), `WARNING` (timeout, błąd odbioru, bufor), `ERROR` (błąd handlera z `exc_info=True`), `DEBUG` (brak handlera) |
+| `client/gui/app.py` | `WARNING` (błędy serwera), `DEBUG` (zdarzenia GUI) |
+| `client/gui/chat_window.py` | `DEBUG` (zdarzenia GUI) |
+
+Logi serwera (`rcmp.server.*`) i klienta (`rcmp.client.*`) są rozdzielone — można je filtrować niezależnie. Poziom logowania sterowany jest zmienną środowiskową `LOG_LEVEL`:
+
+```bash
+python -m server.main                    # domyślnie INFO
+LOG_LEVEL=DEBUG python -m server.main    # wszystkie zdarzenia, w tym GUI i brakujące handlery
+LOG_LEVEL=WARNING python -m server.main  # tylko ostrzeżenia i błędy
+```
+
 ---
 
 ## 5. Schemat bazy danych
@@ -698,6 +725,8 @@ Testy jednostkowe obejmują **174 przypadki testowe** w 7 plikach testowych.
 | `test_sender.py` | `RCMPSender` | 36 |
 | **Razem** | | **174** |
 
+Testy klienta (`test_connection.py`, `test_sender.py`) pokrywają całą logikę warstwy protokołu po stronie klienta bez GUI i bez rzeczywistego połączenia sieciowego.
+
 ### test_auth.py — AuthManager (22 testy)
 
 **Nonce (4 testy)**
@@ -944,6 +973,29 @@ Testy jednostkowe obejmują **174 przypadki testowe** w 7 plikach testowych.
 | `test_success_promotes_user` | awans do admin → UPDATE w bazie + SET_USER_ROLE_OK |
 | `test_success_notifies_online_user` | zmiana roli online → ROLE_CHANGED do użytkownika + aktualizacja sesji |
 
+
+### test_connection.py — RCMPConnection (27 testów)
+
+| Klasa | Testowane scenariusze |
+|---|---|
+| `TestIsConnected` | stan początkowy, writer None, flaga connected, kombinacje |
+| `TestDisconnect` | ustawienie flagi, wywołanie `writer.close()`, brak writera, OSError przy close |
+| `TestBackoff` | wartości sekwencji BACKOFF, reset, ograniczenie do max 60 s |
+| `TestConnect` | sukces (mock), ConnectionRefusedError, TimeoutError, OSError, reset backoff |
+| `TestReconnect` | inkrementacja idx, poprawna sekwencja opóźnień, sukces, ograniczenie do 60 s |
+| `TestGetTlsVersion` | brak writera, wersja z ssl_object, fallback przy wyjątku, ssl_object=None |
+
+### test_sender.py — RCMPSender (36 testów)
+
+| Klasa | Testowane scenariusze |
+|---|---|
+| `TestSend` | UUID v4, wymagane pola ramki, pusty payload, brak wysyłki gdy rozłączony, unikalność msg_id, timestamp ms, `\n` na końcu, BrokenPipe |
+| `TestSendLogin` | typ ramki, obecność username/password/nonce, format hex nonce, unikalność nonce |
+| `TestSendMessage` | typ, payload (target_type/id/body/seq_id/hmac), inkrementacja seq_id, rejestracja w _pending_acks, HMAC z/bez secretu |
+| `TestComputeHmac` | format hex SHA-256, deterministyczność, wrażliwość na body/secret, pusty wynik bez secretu |
+| `TestAckAndRetransmission` | usunięcie z pending po confirm, brak błędu dla nieznanego ID, retransmisja po timeout, brak retransmisji przed timeout, usunięcie po max próbach, inkrementacja licznika prób |
+| `TestHelperSendMethods` | PING, BYE, MESSAGE_ACK, JOIN_ROOM, LEAVE_ROOM, DELETE_USER, SET_USER_ROLE, ROOM_KICK, ROOM_BAN, ROOM_UNBAN |
+
 ### Uruchomienie testów
 
 Testy klienta używają `pytest-asyncio` (wymaganie dodane do `requirements.txt`).
@@ -981,85 +1033,3 @@ pytest tests/ --cov=server --cov=client --cov=shared --cov-report=term-missing
 - **Status `away`** nie jest obsługiwany przez GUI — klient zawsze prezentuje status `online`.
 
 ---
-
-## 15. Zmiany wprowadzone po wstępnej ocenie
-
-### 15.1 Testy modułów klienta
-
-Uzupełniono wcześniej puste pliki testów klienta (`test_connection.py`, `test_sender.py`) o łącznie **63 testy jednostkowe** pokrywające całą logikę warstwy protokołu po stronie klienta (bez GUI i bez rzeczywistego połączenia sieciowego):
-
-| Plik | Moduł | Liczba testów |
-|---|---|---|
-| `test_connection.py` | `RCMPConnection` | 27 |
-| `test_sender.py` | `RCMPSender` | 36 |
-| **Razem (nowe)** | | **63** |
-
-**`test_connection.py` — RCMPConnection (27 testów)**
-
-| Klasa | Testowane scenariusze |
-|---|---|
-| `TestIsConnected` | stan początkowy, writer None, flaga connected, kombinacje |
-| `TestDisconnect` | ustawienie flagi, wywołanie `writer.close()`, brak writera, OSError przy close |
-| `TestBackoff` | wartości sekwencji BACKOFF, reset, ograniczenie do max 60 s |
-| `TestConnect` | sukces (mock), ConnectionRefusedError, TimeoutError, OSError, reset backoff |
-| `TestReconnect` | inkrementacja idx, poprawna sekwencja opóźnień, sukces, ograniczenie do 60 s |
-| `TestGetTlsVersion` | brak writera, wersja z ssl_object, fallback przy wyjątku, ssl_object=None |
-
-**`test_sender.py` — RCMPSender (36 testów)**
-
-| Klasa | Testowane scenariusze |
-|---|---|
-| `TestSend` | UUID v4, wymagane pola ramki, pusty payload, brak wysyłki gdy rozłączony, unikalność msg_id, timestamp ms, `\n` na końcu, BrokenPipe |
-| `TestSendLogin` | typ ramki, obecność username/password/nonce, format hex nonce, unikalność nonce |
-| `TestSendMessage` | typ, payload (target_type/id/body/seq_id/hmac), inkrementacja seq_id, rejestracja w _pending_acks, HMAC z/bez secretu |
-| `TestComputeHmac` | format hex SHA-256, deterministyczność, wrażliwość na body/secret, pusty wynik bez secretu |
-| `TestAckAndRetransmission` | usunięcie z pending po confirm, brak błędu dla nieznanego ID, retransmisja po timeout, brak retransmisji przed timeout, usunięcie po max próbach, inkrementacja licznika prób |
-| `TestHelperSendMethods` | PING, BYE, MESSAGE_ACK, JOIN_ROOM, LEAVE_ROOM, DELETE_USER, SET_USER_ROLE, ROOM_KICK, ROOM_BAN, ROOM_UNBAN |
-
-Łączna liczba testów po uzupełnieniu: **111 (serwer) + 63 (klient) = 174**.
-
-### 15.2 Zastąpienie `print()` modułem `logging`
-
-Wszystkie wywołania `print()` w kodzie serwera i klienta zostały zastąpione modułem `logging` ze standardowej biblioteki Pythona. Zmiany objęły pliki:
-
-| Plik | Poziomy logowania |
-|---|---|
-| `server/main.py` | `INFO` (start, migracje, połączenia), `WARNING` (timeouty, błędy formatu), `ERROR` (błędy handlerów z `exc_info=True`) |
-| `server/handlers/messaging.py` | `WARNING` (błąd HMAC) |
-| `client/protocol/connection.py` | `INFO` (reconnect), `WARNING` (błędy połączenia) |
-| `client/protocol/sender.py` | `INFO` (retransmisja), `WARNING` (brak ACK, błąd gniazda) |
-| `client/protocol/receiver.py` | `INFO` (zamknięcie połączenia), `WARNING` (timeout, błąd odbioru, bufor), `ERROR` (błąd handlera z `exc_info=True`), `DEBUG` (brak handlera) |
-| `client/gui/app.py` | `WARNING` (błędy serwera), `DEBUG` (zdarzenia GUI) |
-| `client/gui/chat_window.py` | `DEBUG` (zdarzenia GUI) |
-
-Punkt wejścia (`server/main.py → main()`) konfiguruje `logging.basicConfig` z formatem:
-```
-2026-06-15 12:34:56 [WARNING] rcmp.server: Timeout logowania: 192.168.1.5
-```
-
-Korzyści praktyczne:
-- możliwość przekierowania logów do pliku przez `--log-file` lub konfigurację `logging` bez zmian w kodzie,
-- wyciszenie logów `DEBUG` w środowisku produkcyjnym przez ustawienie `level=logging.WARNING`,
-- błędy handlerów logowane z pełnym traceback (`exc_info=True`) — ułatwia diagnozowanie bugów,
-- separacja logów serwera (`rcmp.server.*`) od klienta (`rcmp.client.*`) — można filtrować niezależnie.
-
-Uruchomienie serwera z bardziej szczegółowym logowaniem:
-
-```bash
-# Domyślne (INFO)
-python -m server.main
-
-# Verbose (DEBUG) — widać wszystkie zdarzenia GUI i brakujące handlery
-LOG_LEVEL=DEBUG python -m server.main
-
-# Tylko ostrzeżenia i błędy
-LOG_LEVEL=WARNING python -m server.main
-```
-
-Aby użyć `LOG_LEVEL` z env, można opcjonalnie dodać na początku `main()`:
-
-```python
-import os
-log_level = getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO)
-logging.basicConfig(level=log_level, ...)
-```
