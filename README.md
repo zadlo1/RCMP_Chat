@@ -8,15 +8,19 @@ Projekt nr 3 — Programowanie Usług Sieciowych
 ## Spis treści
 
 1. [Opis projektu](#1-opis-projektu)
-2. [Protokół RCMP](#2-protokół-rcmp)
-3. [Architektura aplikacji](#3-architektura-aplikacji)
-4. [Struktura projektu](#4-struktura-projektu)
-5. [Wymagania](#5-wymagania)
-6. [Instalacja i uruchomienie](#6-instalacja-i-uruchomienie)
-7. [Przypadki użycia](#7-przypadki-użycia)
-8. [Bezpieczeństwo](#8-bezpieczeństwo)
-9. [Obsługa błędów](#9-obsługa-błędów)
-10. [Testy](#10-testy)
+2. [Zmiany względem poprzednich etapów](#2-zmiany-względem-poprzednich-etapów)
+3. [Protokół RCMP](#3-protokół-rcmp)
+4. [Architektura aplikacji](#4-architektura-aplikacji)
+5. [Schemat bazy danych](#5-schemat-bazy-danych)
+6. [Struktura projektu](#6-struktura-projektu)
+7. [Wymagania i instalacja](#7-wymagania-i-instalacja)
+8. [Uruchomienie](#8-uruchomienie)
+9. [Interfejs użytkownika (GUI)](#9-interfejs-użytkownika-gui)
+10. [Przypadki użycia](#10-przypadki-użycia)
+11. [Bezpieczeństwo](#11-bezpieczeństwo)
+12. [Obsługa błędów](#12-obsługa-błędów)
+13. [Testy](#13-testy)
+14. [Znane ograniczenia](#14-znane-ograniczenia)
 
 ---
 
@@ -24,28 +28,72 @@ Projekt nr 3 — Programowanie Usług Sieciowych
 
 RCMP Chat to aplikacja komunikatora czasu rzeczywistego zbudowana na autorskim protokole warstwy aplikacyjnej **RCMP (Real-Time Chat Messaging Protocol)**. System umożliwia bezpieczną wymianę wiadomości tekstowych pomiędzy użytkownikami w ramach pokoi tematycznych oraz w trybie wiadomości prywatnych 1:1.
 
-### Rozwiązywane problemy
-
 Typowe proste rozwiązania socketowe nie zapewniają mechanizmów niezbędnych w produkcyjnym komunikatorze. RCMP Chat implementuje:
 
-- synchroniczną wymianę wiadomości tekstowych z niskim opóźnieniem,
+- synchroniczną wymianę wiadomości z niskim opóźnieniem,
 - zarządzanie sesjami wielu równoczesnych użytkowników,
-- śledzenie statusu obecności użytkowników (online / offline / away),
-- potwierdzanie dostarczenia wiadomości,
-- utrzymanie połączenia przy braku aktywności (keep-alive),
+- śledzenie statusu obecności (online / away / offline),
+- potwierdzanie dostarczenia wiadomości (MESSAGE_ACK),
+- utrzymanie połączenia przy braku aktywności (PING/PONG keep-alive),
 - dołączanie i opuszczanie pokojów w trakcie trwania sesji,
-- odporność na utratę połączenia z mechanizmem reconnect,
-- wykrywanie duplikatów wiadomości,
+- odporność na utratę połączenia z mechanizmem reconnect i exponential backoff,
+- wykrywanie duplikatów wiadomości po `msg_id`,
 - ochronę przed replay attack,
-- rate limiting i ochronę przed nadużyciami.
+- rate limiting i ochronę przed nadużyciami,
+- system znajomych z wiadomościami prywatnymi (DM),
+- zaproszenia do pokojów prywatnych,
+- panel administracyjny (zarządzanie pokojami i użytkownikami),
+- moderację pokojów (kick, ban, unban).
 
-### Model działania
-
-Model klient–serwer. Serwer centralny pośredniczy we wszystkich wiadomościach — klienci nie komunikują się bezpośrednio między sobą.
+Model działania: **klient–serwer**. Serwer centralny pośredniczy we wszystkich wiadomościach — klienci nie komunikują się bezpośrednio między sobą.
 
 ---
 
-## 2. Protokół RCMP
+## 2. Zmiany względem poprzednich etapów
+
+### Co się zmieniło względem Etapu 1 (specyfikacja protokołu)
+
+Etap 1 definiował rdzeń protokołu RCMP. Podczas implementacji protokół został rozszerzony o szereg typów wiadomości nieobecnych w pierwotnej specyfikacji. Wszystkie rozszerzenia zachowują kompatybilność z oryginalną kopertą (`type`, `msg_id`, `ts`, `token`, `payload`).
+
+| Zmiana | Opis |
+|---|---|
+| ➕ `REGISTER` / `REGISTER_OK` / `REGISTER_ERR` | Rejestracja nowych kont użytkowników — w Etapie 1 zakładano predefiniowane konta w bazie |
+| ➕ `ROOMS_LIST` | Dynamiczne pobieranie listy pokojów z serwera zamiast hardcodowania po stronie klienta |
+| ➕ `ROOM_INVITE` / `ROOM_INVITE_ACCEPT` / `ROOM_INVITE_DECLINE` | Zaproszenia do pokojów prywatnych przez GUI (w Etapie 1 ACL zarządzano wyłącznie przez administratora) |
+| ➕ `FRIEND_REQUEST` / `FRIEND_REQUEST_ACCEPT` / `FRIEND_REQUEST_DECLINE` | System znajomych nieobecny w specyfikacji |
+| ➕ `FRIEND_STATUS_UPDATE` / `FRIENDS_LIST` | Powiadomienia o statusach znajomych w czasie rzeczywistym |
+| ➕ `DIRECT_MESSAGE` | Wiadomości prywatne 1:1 między znajomymi jako oddzielny typ (w Etapie 1 DM realizowane przez `SEND_MESSAGE` z `target_type=user`) |
+| ➕ `FRIEND_REMOVE` | Usuwanie znajomego z listy |
+| ➕ `CREATE_ROOM` / `CREATE_ROOM_OK` / `DELETE_ROOM` / `DELETE_ROOM_OK` | Zarządzanie pokojami przez admina przez protokół (w Etapie 1 opisane jako UC7, bez dedykowanych typów wiadomości) |
+| ➕ `ROOM_MEMBERS_REQUEST` / `ROOM_MEMBERS_LIST` | Pobieranie listy uczestników pokoju |
+| ➕ `ROOM_KICK` / `ROOM_KICK_OK` / `ROOM_BAN` / `ROOM_BAN_OK` / `ROOM_UNBAN` / `ROOM_UNBAN_OK` | Moderacja pokojów — w Etapie 1 brak tych mechanizmów |
+| ➕ `ADMIN_USERS_REQUEST` / `ADMIN_USERS_LIST` | Panel admina do przeglądania użytkowników |
+| ➕ `DELETE_USER` / `DELETE_USER_OK` / `SET_USER_ROLE` / `SET_USER_ROLE_OK` | Zarządzanie kontami użytkowników przez admina |
+| ➕ `ACCOUNT_DELETED` / `ROLE_CHANGED` | Powiadomienia push do klienta o zmianach administracyjnych |
+| ➕ Nowe kody błędów | `4033 SELF_ACTION_FORBIDDEN`, `4043 ROOM_BANNED`, `4044 LAST_ADMIN`, `4091 USERNAME_TAKEN`, `4092 USERNAME_INVALID`, `4093 INVALID_ROLE` |
+| ❌ `HISTORY_REQUEST` / `HISTORY_RESPONSE` | Planowane w Etapie 1 jako rozszerzenie — **nie zaimplementowane**; historia przechowywana wyłącznie w pamięci klienta |
+| ❌ `STATUS` (zmiana statusu) | Zdefiniowany w Etapie 1, nie obsługiwany przez GUI klienta w tej wersji |
+
+### Co się zmieniło względem Etapu 2 (projekt aplikacji)
+
+Etap 2 definiował architekturę i przypadki użycia. Implementacja różni się w następujących punktach:
+
+| Zmiana | Opis |
+|---|---|
+| ✅ CLI → **GUI (CustomTkinter)** | Etap 2 wskazywał klienta CLI jako MVP. Zamiast tego zaimplementowano desktopowy interfejs graficzny oparty na bibliotece CustomTkinter. Funkcjonalność protokołu pozostaje identyczna — zmiana dotyczy wyłącznie warstwy prezentacji |
+| ✅ Rejestracja kont | W Etapie 2 nie było UC dla rejestracji — system zakładał konta predefiniowane przez admina. Zaimplementowano pełny przepływ rejestracji przez GUI |
+| ✅ System znajomych (DM) | Nie planowany w Etapie 2 — dodany w trakcie implementacji jako naturalne rozszerzenie komunikacji 1:1 |
+| ✅ Moderacja pokojów (kick/ban) | Nie było w UC Etapu 2 — zaimplementowane jako rozszerzenie UC7 |
+| ✅ Tabele `room_bans`, `room_kicks`, `friendships` | Schemat bazy z Etapu 2 (Users, Rooms, Messages, ACL) rozszerzony o trzy nowe tabele |
+| ❌ `BLOCK_USER` / `UNBLOCK_USER` / `FORCE_DISCONNECT` | UC8 z Etapu 2 — **częściowo zrealizowane**: usuwanie kont i wymuszanie rozłączenia działa, dedykowana blokada konta (flaga `is_blocked`) jest w schemacie bazy, ale `BLOCK_USER`/`UNBLOCK_USER` nie są obsługiwane jako osobne typy wiadomości w protokole |
+| ❌ `HISTORY_REQUEST` / `HISTORY_RESPONSE` | Planowane jako rozszerzenie w Etapie 2 — **nie zaimplementowane** |
+
+> **Screenshot:** widok ogólny aplikacji z zalogowanym użytkownikiem i otwartym pokojem  
+> `📸 [SCREENSHOT: okno główne ChatWindow — sidebar z pokojami i znajomymi, obszar czatu]`
+
+---
+
+## 3. Protokół RCMP
 
 ### Założenia techniczne
 
@@ -59,8 +107,6 @@ Model klient–serwer. Serwer centralny pośredniczy we wszystkich wiadomościac
 Każda wiadomość to pojedyncza linia JSON zakończona znakiem `\n`. Wybór JSON uzasadniony jest czytelnością podczas debugowania i łatwością walidacji schematu.
 
 ### Struktura koperty (envelope)
-
-Każda wiadomość zawiera wspólną kopertę:
 
 ```json
 {
@@ -77,20 +123,20 @@ Każda wiadomość zawiera wspólną kopertę:
 | `type` | zawsze | typ wiadomości |
 | `msg_id` | zawsze | unikalny UUID v4 wiadomości |
 | `ts` | zawsze | Unix timestamp w milisekundach |
-| `token` | poza LOGIN | token sesji JWT |
+| `token` | poza LOGIN/REGISTER | token sesji JWT |
 | `payload` | opcjonalne | dane właściwe wiadomości |
 
-### Typy wiadomości
+### Typy wiadomości — rdzeń protokołu (Etap 1)
 
 | Typ | Kierunek | Opis |
 |---|---|---|
 | `LOGIN` | C → S | uwierzytelnienie użytkownika |
-| `LOGIN_OK` | S → C | potwierdzenie zalogowania, wydanie tokenu sesji |
+| `LOGIN_OK` | S → C | potwierdzenie zalogowania, token JWT + hmac_secret |
 | `LOGIN_ERR` | S → C | błąd logowania |
 | `JOIN_ROOM` | C → S | dołączenie do pokoju |
 | `LEAVE_ROOM` | C → S | opuszczenie pokoju |
-| `ROOM_EVENT` | S → C | powiadomienie o zmianie w pokoju |
-| `SEND_MESSAGE` | C → S | wysłanie wiadomości do pokoju lub użytkownika |
+| `ROOM_EVENT` | S → C | zdarzenie w pokoju (join/leave/deleted) |
+| `SEND_MESSAGE` | C → S | wysłanie wiadomości |
 | `DELIVER_MESSAGE` | S → C | dostarczenie wiadomości do odbiorcy |
 | `MESSAGE_ACK` | C → S | potwierdzenie odebrania wiadomości |
 | `STATUS` | C → S | zmiana statusu (online/away) |
@@ -100,27 +146,44 @@ Każda wiadomość zawiera wspólną kopertę:
 | `BYE` | C → S | zamknięcie sesji przez klienta |
 | `BYE_ACK` | S → C | potwierdzenie zamknięcia sesji |
 
-### Stany sesji
+### Typy wiadomości — rozszerzenia zaimplementowane
 
-**Po stronie serwera:**
-
-```
-CONNECTED → AUTHENTICATING → ACTIVE → CLOSING → CLOSED
-```
-
-- połączenie TCP otwiera stan `CONNECTED`,
-- odebranie `LOGIN` przechodzi do `AUTHENTICATING`,
-- pomyślna weryfikacja przechodzi do `ACTIVE`,
-- `LOGIN_ERR`, `BYE` lub błąd krytyczny przechodzi do `CLOSING`,
-- zamknięcie TCP kończy stan `CLOSED`.
-
-**Po stronie klienta:**
-
-```
-DISCONNECTED → CONNECTED → LOGGED_IN → IN_ROOM → DISCONNECTED
-```
-
-- `BYE_ACK`, timeout lub błąd TCP przenosi z powrotem do `DISCONNECTED`.
+| Typ | Kierunek | Opis |
+|---|---|---|
+| `REGISTER` | C → S | rejestracja nowego konta |
+| `REGISTER_OK` | S → C | potwierdzenie rejestracji |
+| `REGISTER_ERR` | S → C | błąd rejestracji |
+| `ROOMS_LIST` | S → C | lista dostępnych pokojów |
+| `ROOM_INVITE` | S → C | zaproszenie do pokoju prywatnego |
+| `ROOM_INVITE_ACCEPT` | C → S | akceptacja zaproszenia |
+| `ROOM_INVITE_DECLINE` | C → S | odrzucenie zaproszenia |
+| `FRIEND_REQUEST` | C → S → C | zaproszenie do znajomych |
+| `FRIEND_REQUEST_ACCEPT` | C → S → C | akceptacja zaproszenia do znajomych |
+| `FRIEND_REQUEST_DECLINE` | C → S | odrzucenie zaproszenia do znajomych |
+| `FRIEND_STATUS_UPDATE` | S → C | zmiana statusu znajomego |
+| `FRIENDS_LIST` | S → C | lista znajomych po zalogowaniu |
+| `FRIEND_REMOVE` | C → S | usunięcie znajomego |
+| `DIRECT_MESSAGE` | C ↔ S ↔ C | wiadomość prywatna między znajomymi |
+| `CREATE_ROOM` | C → S | tworzenie pokoju (tylko admin) |
+| `CREATE_ROOM_OK` | S → C | potwierdzenie utworzenia pokoju |
+| `DELETE_ROOM` | C → S | usunięcie pokoju (tylko admin) |
+| `DELETE_ROOM_OK` | S → C | potwierdzenie usunięcia pokoju |
+| `ROOM_MEMBERS_REQUEST` | C → S | żądanie listy uczestników |
+| `ROOM_MEMBERS_LIST` | S → C | lista uczestników pokoju |
+| `ROOM_KICK` | C → S | wyrzucenie użytkownika z pokoju |
+| `ROOM_KICK_OK` | S → C | potwierdzenie wyrzucenia |
+| `ROOM_BAN` | C → S | zbanowanie użytkownika w pokoju |
+| `ROOM_BAN_OK` | S → C | potwierdzenie bana |
+| `ROOM_UNBAN` | C → S | odbanowanie użytkownika |
+| `ROOM_UNBAN_OK` | S → C | potwierdzenie odbanowania |
+| `ADMIN_USERS_REQUEST` | C → S | żądanie listy użytkowników (tylko admin) |
+| `ADMIN_USERS_LIST` | S → C | lista wszystkich użytkowników systemu |
+| `DELETE_USER` | C → S | usunięcie konta użytkownika (tylko admin) |
+| `DELETE_USER_OK` | S → C | potwierdzenie usunięcia konta |
+| `SET_USER_ROLE` | C → S | zmiana roli użytkownika (tylko admin) |
+| `SET_USER_ROLE_OK` | S → C | potwierdzenie zmiany roli |
+| `ACCOUNT_DELETED` | S → C | powiadomienie użytkownika o usunięciu konta |
+| `ROLE_CHANGED` | S → C | powiadomienie użytkownika o zmianie roli |
 
 ### Timeouty i keep-alive
 
@@ -150,14 +213,12 @@ Jeśli klient nie otrzyma `MESSAGE_ACK` w ciągu 5 s, ponawia `SEND_MESSAGE` z t
 
 ---
 
-## 3. Architektura aplikacji
-
-### Komponenty systemu
+## 4. Architektura aplikacji
 
 ```
 ┌─────────────────┐
 │   Client App    │
-│   GUI / CLI     │
+│   GUI (CTk)     │
 │   RCMP Client   │
 └────────┬────────┘
          │ TLS/TCP
@@ -171,42 +232,120 @@ Jeśli klient nie otrzyma `MESSAGE_ACK` w ciągu 5 s, ponawia `SEND_MESSAGE` z t
 └────────┬────────┘
          │
 ┌────────▼────────┐
-│    Database     │
+│    PostgreSQL   │
 │     Users       │
 │     Rooms       │
 │    Messages     │
 │      ACL        │
+│   Friendships   │
+│  Room Bans/Kick │
 └─────────────────┘
 ```
-
-### Klient RCMP
-
-Odpowiada za logowanie, utrzymywanie sesji, wysyłanie i odbieranie wiadomości, reconnect po utracie połączenia, obsługę PING/PONG oraz retransmisję wiadomości. Zaimplementowany jako aplikacja desktopowa z GUI (CustomTkinter).
-
-> **Uwaga:** Wcześniejsze etapy projektu (Etap 1 i Etap 2) wskazywały klienta CLI jako docelową formę MVP. W trakcie realizacji podjąłem decyzję o zastąpieniu CLI prostym interfejsem graficznym opartym na bibliotece CustomTkinter. Funkcjonalność protokołu pozostaje identyczna — zmiana dotyczy wyłącznie warstwy prezentacji.
-
-### Serwer RCMP
-
-Centralny komponent systemu obsługujący połączenia TCP/TLS, walidację komunikatów, autoryzację użytkowników, routing wiadomości, zarządzanie pokojami, retransmisję i ACK, wykrywanie timeoutów oraz ochronę przed nadużyciami.
-
-### Baza danych (PostgreSQL)
-
-Przechowuje użytkowników, hashe haseł bcrypt, pokoje, listy ACL pokojów prywatnych, historię wiadomości oraz logi systemowe.
 
 ### Przepływ danych
 
 1. Klient nawiązuje połączenie TCP/TLS z serwerem.
-2. Klient wysyła komunikat `LOGIN`.
-3. Serwer weryfikuje dane użytkownika względem bazy.
-4. Serwer odsyła `LOGIN_OK` wraz z tokenem JWT i `hmac_secret`.
-5. Klient może dołączać do pokojów oraz wysyłać wiadomości.
-6. Serwer przekazuje wiadomości odbiorcom przez `DELIVER_MESSAGE`.
-7. Odbiorcy potwierdzają odbiór przez `MESSAGE_ACK`.
-8. Po zakończeniu sesji klient wysyła `BYE`, serwer odpowiada `BYE_ACK`.
+2. Klient wysyła `LOGIN` z `username`, `password`, `nonce`.
+3. Serwer weryfikuje dane względem bcrypt hash w bazie, sprawdza nonce.
+4. Serwer odsyła `LOGIN_OK` z tokenem JWT i `hmac_secret`.
+5. Serwer wysyła `FRIENDS_LIST` oraz `ROOMS_LIST` po zalogowaniu.
+6. Klient może dołączać do pokojów oraz wysyłać wiadomości.
+7. Serwer przekazuje wiadomości odbiorcom przez `DELIVER_MESSAGE`.
+8. Odbiorcy potwierdzają odbiór przez `MESSAGE_ACK`.
+9. Po zakończeniu sesji klient wysyła `BYE`, serwer odpowiada `BYE_ACK`.
+
+### Asyncio + Tkinter
+
+GUI działa w głównym wątku Tkintera, a protokół RCMP w osobnym wątku z własną pętlą asyncio. Komunikacja między wątkami odbywa się przez `asyncio.run_coroutine_threadsafe` (GUI → asyncio) oraz `self.after(0, callback)` (asyncio → GUI).
 
 ---
 
-## 4. Struktura projektu
+## 5. Schemat bazy danych
+
+### Tabela `users`
+
+| Kolumna | Typ | Opis |
+|---|---|---|
+| `id` | SERIAL PK | identyfikator |
+| `username` | VARCHAR(64) UNIQUE | nazwa użytkownika |
+| `password` | VARCHAR(255) | bcrypt hash hasła |
+| `status` | VARCHAR(16) | `online` / `away` / `offline` |
+| `role` | VARCHAR(16) | `user` / `admin` |
+| `is_blocked` | BOOLEAN | czy konto jest zablokowane |
+| `created_at` | TIMESTAMPTZ | data rejestracji |
+| `last_seen` | TIMESTAMPTZ | ostatnia aktywność |
+
+### Tabela `rooms`
+
+| Kolumna | Typ | Opis |
+|---|---|---|
+| `id` | SERIAL PK | identyfikator |
+| `name` | VARCHAR(64) UNIQUE | nazwa pokoju |
+| `is_private` | BOOLEAN | czy pokój jest prywatny |
+| `created_at` | TIMESTAMPTZ | data utworzenia |
+
+### Tabela `room_acl`
+
+| Kolumna | Typ | Opis |
+|---|---|---|
+| `room_id` | INTEGER FK | pokój |
+| `user_id` | INTEGER FK | użytkownik z dostępem |
+| `granted_at` | TIMESTAMPTZ | data nadania dostępu |
+
+### Tabela `messages`
+
+| Kolumna | Typ | Opis |
+|---|---|---|
+| `id` | SERIAL PK | identyfikator |
+| `msg_id` | UUID UNIQUE | UUID z protokołu (wykrywanie duplikatów) |
+| `seq_id` | INTEGER | numer sekwencyjny nadawcy |
+| `sender_id` | INTEGER FK | nadawca |
+| `room_id` | INTEGER FK | pokój (NULL jeśli DM) |
+| `recipient_id` | INTEGER FK | odbiorca (NULL jeśli pokój) |
+| `body` | TEXT | treść wiadomości |
+| `hmac` | VARCHAR(64) | HMAC-SHA256 |
+| `sent_at` | TIMESTAMPTZ | czas wysłania |
+
+### Tabela `friendships` *(nowa względem Etapu 2)*
+
+| Kolumna | Typ | Opis |
+|---|---|---|
+| `id` | SERIAL PK | identyfikator |
+| `user_id` | INTEGER FK | nadawca zaproszenia |
+| `friend_id` | INTEGER FK | odbiorca zaproszenia |
+| `status` | VARCHAR(16) | `pending` / `accepted` / `declined` |
+| `created_at` | TIMESTAMPTZ | data wysłania zaproszenia |
+| `updated_at` | TIMESTAMPTZ | data ostatniej zmiany |
+
+### Tabela `room_bans` *(nowa względem Etapu 2)*
+
+| Kolumna | Typ | Opis |
+|---|---|---|
+| `room_id` | INTEGER FK | pokój |
+| `user_id` | INTEGER FK | zbanowany użytkownik |
+| `banned_by` | INTEGER FK | admin który nałożył bana |
+| `banned_at` | TIMESTAMPTZ | data bana |
+
+### Tabela `room_kicks` *(nowa względem Etapu 2)*
+
+| Kolumna | Typ | Opis |
+|---|---|---|
+| `room_id` | INTEGER FK | pokój |
+| `user_id` | INTEGER FK | wyrzucony użytkownik |
+| `kicked_by` | INTEGER FK | admin który wyrzucił |
+| `kicked_at` | TIMESTAMPTZ | data wyrzucenia |
+
+### Tabela `used_nonces`
+
+Przechowuje jednorazowe nonce z loginów (ochrona przed replay attack). Wpisy wygasają po 300 s.
+
+### Tabela `system_logs`
+
+Przechowuje zdarzenia: `LOGIN_FAILED`, `HMAC_ERROR`, `RATE_LIMIT`, błędy serwera itd.
+
+---
+
+## 6. Struktura projektu
 
 ```
 rcmp_chat/
@@ -214,61 +353,70 @@ rcmp_chat/
 ├── server/                        # serwer RCMP
 │   ├── main.py                    # punkt wejścia serwera
 │   ├── config.py                  # konfiguracja (port, timeouty, limity)
-│   ├── session.py                 # zarządzanie sesjami (SessionManager)
-│   ├── handlers/                  # obsługa poszczególnych typów wiadomości
+│   ├── session.py                 # Session, SessionManager
+│   └── handlers/                  # handlery typów wiadomości
 │   │   ├── login.py               # LOGIN → LOGIN_OK / LOGIN_ERR
-│   │   ├── messaging.py           # SEND_MESSAGE → DELIVER_MESSAGE → MESSAGE_ACK
-│   │   ├── rooms.py               # JOIN_ROOM, LEAVE_ROOM → ROOM_EVENT
+│   │   ├── messaging.py           # SEND_MESSAGE, DELIVER_MESSAGE, MESSAGE_ACK
+│   │   ├── rooms.py               # JOIN_ROOM, LEAVE_ROOM, ROOM_EVENT, invite, kick, ban
 │   │   ├── keepalive.py           # PING / PONG
-│   │   └── bye.py                 # BYE → BYE_ACK
-│   └── managers/                  # logika biznesowa
-│       ├── auth.py                # JWT, bcrypt, walidacja tokenów
-│       ├── room_manager.py        # zarządzanie pokojami i ACL
-│       ├── rate_limiter.py        # rate limiting
-│       └── message_router.py     # routing wiadomości do odbiorców
+│   │   ├── bye.py                 # BYE → BYE_ACK
+│   │   ├── register.py            # REGISTER → REGISTER_OK / REGISTER_ERR
+│   │   ├── friends.py             # FRIEND_REQUEST, DM, FRIENDS_LIST
+│   │   ├── invite.py              # ROOM_INVITE, ROOM_INVITE_ACCEPT/DECLINE
+│   │   └── admin.py               # CREATE/DELETE_ROOM, DELETE_USER, SET_USER_ROLE
+│   └── managers/
+│       ├── auth.py                # JWT, bcrypt, nonce, rate limit loginów
+│       ├── room_manager.py        # zarządzanie pokojami in-memory i ACL
+│       ├── rate_limiter.py        # rate limiting wiadomości i połączeń
+│       └── message_router.py     # routing wiadomości do sesji odbiorców
 │
 ├── client/                        # klient RCMP
 │   ├── main.py                    # punkt wejścia klienta
-│   ├── protocol/                  # implementacja protokołu po stronie klienta
+│   ├── protocol/
 │   │   ├── connection.py          # TCP/TLS connect, reconnect, backoff
 │   │   ├── sender.py              # wysyłanie ramek, retransmisja, HMAC
 │   │   └── receiver.py            # odbieranie ramek, buforowanie do \n
-│   └── gui/                       # interfejs użytkownika (CustomTkinter)
+│   └── gui/
 │       ├── app.py                 # główne okno aplikacji
-│       ├── login_window.py        # okno logowania
+│       ├── login_window.py        # okno logowania i rejestracji
 │       ├── chat_window.py         # główny widok czatu
-│       └── widgets.py             # reużywalne komponenty
+│       └── widgets.py             # komponenty: bąbelki, sidebar, dialogi
 │
-├── shared/                        # kod współdzielony
-│   ├── message_types.py           # stałe typów wiadomości
-│   ├── error_codes.py             # kody błędów
-│   ├── schemas.py                 # walidacja struktury ramek JSON
+├── shared/                        # kod współdzielony klient–serwer
+│   ├── message_types.py           # stałe typów wiadomości i zbiór ALL
+│   ├── error_codes.py             # kody błędów i ich opisy
+│   ├── schemas.py                 # validate_envelope()
 │   └── crypto.py                  # HMAC-SHA256
 │
 ├── tests/
 │   ├── test_server/
-│   │   ├── test_auth.py
-│   │   ├── test_messaging.py
-│   │   └── test_rate_limiter.py
+│   │   ├── test_auth.py           # AuthManager: nonce, rate limit, JWT, bcrypt (22 testy)
+│   │   ├── test_messaging.py      # Session duplikaty, SessionManager, validate_envelope (25 testów)
+│   │   ├── test_rate_limiter.py   # RateLimiter: wiadomości, logowania, połączenia (19 testów)
+│   │   ├── test_room_manager.py   # RoomManager: dostęp, join/leave, moderacja (17 testów)
+│   │   └── test_admin.py          # handlery admin: pokoje, użytkownicy, role (28 testów)
 │   └── test_client/
-│       ├── test_connection.py
-│       └── test_sender.py
+│       ├── test_connection.py     # (placeholder)
+│       └── test_sender.py         # (placeholder)
 │
 ├── scripts/
 │   ├── generate_certs.sh          # generowanie self-signed certyfikatów TLS
 │   ├── init_db.sql                # schemat bazy danych
-│   └── seed_db.py                 # testowe dane
+│   ├── seed_db.py                 # testowe dane (użytkownicy, pokoje)
+│   ├── migrate_add_room_bans.sql  # migracja: tabela room_bans
+│   ├── migrate_add_room_kicks.sql # migracja: tabela room_kicks
+│   └── clear_friendships.py      # narzędzie diagnostyczne: czyszczenie znajomych
 │
 ├── certs/                         # certyfikaty TLS (nie commitować)
 ├── .env                           # zmienne środowiskowe (nie commitować)
 ├── .env.example                   # wzór pliku .env
-├── requirements.txt
-└── README.md
+├── pytest.ini                     # konfiguracja pytest (asyncio_mode = auto)
+└── requirements.txt
 ```
 
 ---
 
-## 5. Wymagania
+## 7. Wymagania i instalacja
 
 ### Wymagania systemowe
 
@@ -279,43 +427,17 @@ rcmp_chat/
 ### Zależności Python
 
 ```
-asyncpg==0.29.0
-PyJWT==2.8.0
-bcrypt==4.1.3
-python-dotenv==1.0.1
-customtkinter==5.2.2
-cryptography==42.0.5
+asyncpg==0.29.0          # async driver do PostgreSQL
+PyJWT==2.8.0             # generowanie i walidacja tokenów JWT
+bcrypt==4.1.3            # hashowanie haseł
+python-dotenv==1.0.1     # wczytywanie zmiennych środowiskowych z .env
+customtkinter==5.2.2     # GUI (nakładka na tkinter)
+cryptography==42.0.5     # HMAC-SHA256, TLS utilities
 pytest==8.2.0
 pytest-asyncio==0.23.6
 ```
 
-### Wymagania niefunkcjonalne
-
-| Wymaganie | Wartość |
-|---|---|
-| Minimalna liczba równoczesnych klientów | 100 |
-| Maksymalne opóźnienie dostarczenia wiadomości (LAN) | 200 ms |
-| Szyfrowanie | TLS 1.3 |
-| Integralność wiadomości | HMAC-SHA256 |
-| Uwierzytelnienie | JWT (HS256, TTL 3600 s) |
-| Hasła | bcrypt |
-
-### Logowanie i diagnostyka
-
-System loguje następujące zdarzenia do tabeli `system_logs` w bazie danych:
-
-- błędy protokołu (niepoprawna koperta, nieznany typ wiadomości),
-- próby logowania (zarówno udane, jak i nieudane),
-- reconnect użytkowników,
-- błędy weryfikacji HMAC,
-- przekroczenia limitu wiadomości (rate limit),
-- błędy wewnętrzne serwera.
-
----
-
-## 6. Instalacja i uruchomienie
-
-### Klonowanie i instalacja zależności
+### Instalacja
 
 ```bash
 git clone <repo>
@@ -326,11 +448,34 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-### Konfiguracja
+### Konfiguracja `.env`
 
 ```bash
 cp .env.example .env
-# Uzupełnij .env swoimi danymi (baza, JWT secret)
+# Uzupełnij .env swoimi danymi
+```
+
+Plik `.env.example`:
+
+```
+SERVER_HOST=127.0.0.1
+SERVER_PORT=9999
+TLS_CERT_PATH=certs/server.crt
+TLS_KEY_PATH=certs/server.key
+
+DB_HOST=localhost
+DB_PORT=5432
+DB_NAME=rcmp_chat
+DB_USER=rcmp_user
+DB_PASSWORD=zmien_mnie
+
+JWT_SECRET=bardzo_tajny_klucz_zmien_mnie
+JWT_TTL_SECONDS=3600
+
+TIMEOUT_LOGIN=10
+TIMEOUT_SESSION=90
+TIMEOUT_PONG=10
+PING_INTERVAL=30
 ```
 
 ### Baza danych
@@ -338,6 +483,7 @@ cp .env.example .env
 ```bash
 psql -U postgres -p 5433 -c "CREATE DATABASE rcmp_chat;"
 psql -U postgres -p 5433 -d rcmp_chat -f scripts/init_db.sql
+python scripts/seed_db.py   # opcjonalne dane testowe
 ```
 
 ### Certyfikaty TLS
@@ -346,66 +492,153 @@ psql -U postgres -p 5433 -d rcmp_chat -f scripts/init_db.sql
 bash scripts/generate_certs.sh
 ```
 
-### Uruchomienie serwera
+Certyfikaty zostaną wygenerowane w katalogu `certs/`. Nie commitować do repozytorium.
+
+---
+
+## 8. Uruchomienie
+
+### Serwer
 
 ```bash
 python -m server.main
 ```
 
-### Uruchomienie klienta
+### Klient
 
 ```bash
 python -m client.main
 ```
 
+### Testy
+
+```bash
+pytest tests/ -v
+```
+
+> **Screenshot:** terminal z uruchomionym serwerem i logiem połączeń  
+> `📸 [SCREENSHOT: konsola serwera — logi: klient połączony, LOGIN_OK, JOIN_ROOM]`
+
 ---
 
-## 7. Przypadki użycia
+## 9. Interfejs użytkownika (GUI)
+
+### Okno logowania / rejestracji
+
+Ekran startowy zawiera pola `username` i `password` oraz przyciski **Zaloguj** i **Zarejestruj**. Błędy logowania wyświetlane są jako czerwony komunikat pod formularzem.
+
+> **Screenshot:** okno logowania  
+> `📸 [SCREENSHOT: LoginWindow — pola username/password, przyciski Zaloguj i Zarejestruj]`
+
+> **Screenshot:** błąd logowania (np. złe hasło)  
+> `📸 [SCREENSHOT: LoginWindow — komunikat błędu LOGIN_ERR pod formularzem]`
+
+### Główne okno czatu (ChatWindow)
+
+Podzielone na dwie sekcje:
+
+- **Sidebar (lewy panel)** — lista pokojów z przyciskiem `+` do przeglądania/dołączania, sekcja `ZNAJOMI` z kolorowymi wskaźnikami statusu (🟢 online, 🟡 away, ⚫ offline).
+- **Obszar czatu (prawy panel)** — historia wiadomości bieżącego pokoju z bąbelkami, pole tekstowe i przycisk wysyłania.
+
+> **Screenshot:** pełne okno czatu z aktywnym pokojem  
+> `📸 [SCREENSHOT: ChatWindow — sidebar z pokojami i znajomymi, bąbelki wiadomości w obszarze czatu]`
+
+> **Screenshot:** placeholder braku pokoju  
+> `📸 [SCREENSHOT: ChatWindow — centralny komunikat "💬 Dołącz do pokoju" gdy użytkownik nie jest w żadnym pokoju]`
+
+### Dialog przeglądania pokojów
+
+Lista dostępnych pokojów z możliwością dołączenia. Dla roli `admin` przy pokojach prywatnych widoczny przycisk `✉` do wysyłania zaproszeń.
+
+> **Screenshot:** dialog listy pokojów  
+> `📸 [SCREENSHOT: BrowseRoomsDialog — lista pokojów, przycisk dołącz, przycisk zaproszenia przy pokoju prywatnym]`
+
+### Zaproszenia do pokojów prywatnych
+
+Użytkownik z rolą `admin` może zaprosić innego użytkownika online do pokoju prywatnego. Zaproszony widzi dialog z przyciskami **Akceptuj** / **Odrzuć**.
+
+> **Screenshot:** dialog zaproszenia do pokoju  
+> `📸 [SCREENSHOT: InviteDialog — powiadomienie o zaproszeniu z przyciskami Akceptuj/Odrzuć]`
+
+### System znajomych
+
+Kliknięcie pseudonimu użytkownika w czacie (pseudonim jest podkreślony i klikalny) otwiera dialog **Dodaj znajomego**. Po akceptacji zaproszenia znajomy pojawia się w sidebarze z aktualnym statusem.
+
+> **Screenshot:** lista znajomych w sidebarze z różnymi statusami  
+> `📸 [SCREENSHOT: sidebar — sekcja ZNAJOMI z wskaźnikami 🟢🟡⚫]`
+
+### Direct Messages (DM)
+
+Kliknięcie znajomego otwiera okno DM z historią rozmowy prywatnej. Okno minimalizuje się zamiast zamykać — historia wiadomości dostępna po ponownym otwarciu.
+
+> **Screenshot:** okno DM  
+> `📸 [SCREENSHOT: okno Direct Message z historią wiadomości 1:1]`
+
+### Panel administracyjny
+
+Dostępny wyłącznie dla roli `admin`. Umożliwia przeglądanie wszystkich użytkowników, zmianę ról (user/admin) i usuwanie kont. Usuniętemu użytkownikowi wyświetlane jest powiadomienie `ACCOUNT_DELETED` i sesja jest zamykana.
+
+> **Screenshot:** panel administracyjny użytkowników  
+> `📸 [SCREENSHOT: AdminPanel — tabela użytkowników z kolumnami id/username/role/status, przyciski Zmień rolę / Usuń]`
+
+### Wiadomości nie wysłane
+
+Jeśli użytkownik opuścił pokój po wysłaniu wiadomości, bąbelek wyświetlany jest z ciemnoczerwonym tłem i komunikatem `⚠ Nie wysłano — opuściłeś pokój`.
+
+> **Screenshot:** bąbelek nie wysłanej wiadomości  
+> `📸 [SCREENSHOT: obszar czatu — bąbelek z czerwonym tłem i komunikatem ostrzeżenia]`
+
+---
+
+## 10. Przypadki użycia
 
 ### UC1 — Logowanie użytkownika
 
-Klient wysyła `LOGIN` z `username`, `password` i jednorazowym `nonce`. Serwer weryfikuje dane względem bcrypt hash w bazie, sprawdza nonce pod kątem replay attack i w przypadku sukcesu odsyła `LOGIN_OK` z tokenem JWT oraz `hmac_secret`. Przy błędnych danych — `LOGIN_ERR 4011`. Po przekroczeniu 5 prób w ciągu 60 s — `LOGIN_ERR 4012`.
+Klient wysyła `LOGIN` z `username`, `password` i jednorazowym `nonce`. Serwer weryfikuje dane względem bcrypt hash w bazie, sprawdza nonce pod kątem replay attack. Przy sukcesie odsyła `LOGIN_OK` z tokenem JWT i `hmac_secret`, a następnie `FRIENDS_LIST` i `ROOMS_LIST`. Przy błędnych danych — `LOGIN_ERR 4011`. Po 5 nieudanych próbach w ciągu 60 s — `LOGIN_ERR 4012`.
+
+### UC1b — Rejestracja użytkownika *(nowy względem Etapu 2)*
+
+Klient wysyła `REGISTER` z `username` i `password`. Serwer waliduje format nazwy, sprawdza unikalność w bazie, hashuje hasło bcrypt i zwraca `REGISTER_OK`. W przypadku błędu (zajęta nazwa, niepoprawny format) zwraca `REGISTER_ERR` z odpowiednim kodem.
 
 ### UC2 — Dołączenie do pokoju
 
-Klient wysyła `JOIN_ROOM` z `room_id`. Serwer sprawdza czy pokój istnieje i czy użytkownik ma uprawnienia (lista ACL dla pokojów prywatnych). Przy sukcesie rozsyła `ROOM_EVENT` do pozostałych użytkowników pokoju.
+Klient wysyła `JOIN_ROOM` z `room_id`. Serwer sprawdza istnienie pokoju i uprawnienia (ACL dla pokojów prywatnych, brak bana). Przy sukcesie rozsyła `ROOM_EVENT` do pozostałych uczestników.
 
 ### UC3 — Wysłanie wiadomości do pokoju
 
-Klient generuje `SEND_MESSAGE` z `target_type=room`, `target_id`, `seq_id`, `body` i obliczonym HMAC-SHA256. Serwer weryfikuje HMAC, zapisuje wiadomość w bazie i rozsyła `DELIVER_MESSAGE` do wszystkich użytkowników pokoju. Odbiorcy odsyłają `MESSAGE_ACK`.
+Klient generuje `SEND_MESSAGE` z `target_type=room`, `target_id`, `seq_id`, `body` i obliczonym HMAC-SHA256. Serwer weryfikuje HMAC, sprawdza rate limit, zapisuje wiadomość w bazie i rozsyła `DELIVER_MESSAGE`. Odbiorcy odsyłają `MESSAGE_ACK`.
 
-### UC4 — Wiadomość prywatna 1:1
+### UC4 — Wiadomość prywatna (DM)
 
-Klient wysyła `SEND_MESSAGE` z `target_type=user` i `target_id` odbiorcy. Serwer odnajduje aktywną sesję odbiorcy i przesyła `DELIVER_MESSAGE` bezpośrednio do niego.
+Klient wysyła `DIRECT_MESSAGE` do znajomego. Serwer odnajduje aktywną sesję odbiorcy i przekazuje wiadomość bezpośrednio. Przy braku aktywnej sesji wiadomość jest odrzucana (brak kolejkowania offline).
 
 ### UC5 — Utrata połączenia i reconnect
 
-Klient wykrywa brak `PONG` po 10 s od wysłania `PING` i uznaje połączenie za zerwane. Inicjuje reconnect z wykładniczym backoff: 1 s, 2 s, 4 s, 8 s, maksymalnie 60 s. Po ponownym połączeniu wykonuje nowy `LOGIN`. Jeśli token JWT jest jeszcze ważny, serwer może odtworzyć stan pokojów.
+Klient wykrywa brak `PONG` po 10 s od wysłania `PING` i uznaje połączenie za zerwane. Inicjuje reconnect z exponential backoff: 1 s, 2 s, 4 s, 8 s, maksymalnie 60 s. Po ponownym połączeniu wykonuje nowy `LOGIN`.
 
 ### UC6 — Próba wejścia do prywatnego pokoju bez uprawnień
 
-Klient wysyła `JOIN_ROOM` dla pokoju prywatnego. Serwer sprawdza listę ACL — jeśli użytkownik nie figuruje na liście, odsyła `ERROR 4032 FORBIDDEN`. Sesja pozostaje aktywna.
+Klient wysyła `JOIN_ROOM` dla pokoju prywatnego. Serwer sprawdza ACL — jeśli użytkownik nie figuruje na liście, odsyła `ERROR 4032 FORBIDDEN`. Sesja pozostaje aktywna.
 
 ### UC7 — Zarządzanie pokojami przez administratora
 
-Administrator z rolą `ADMIN` w tokenie JWT może tworzyć (`CREATE_ROOM`), modyfikować (`UPDATE_ROOM`) i usuwać (`DELETE_ROOM`) pokoje. Serwer propaguje zmiany do aktywnych klientów przez `ROOM_EVENT`.
+Administrator z rolą `admin` w tokenie JWT może tworzyć (`CREATE_ROOM`) i usuwać (`DELETE_ROOM`) pokoje. Usunięcie pokoju rozsyła `ROOM_EVENT` z `event=deleted` do wszystkich uczestników i czyści stan in-memory serwera.
 
 ### UC8 — Zarządzanie użytkownikami przez administratora
 
-Administrator może blokować (`BLOCK_USER`) i odblokowywać (`UNBLOCK_USER`) konta użytkowników oraz wymuszać rozłączenie (`FORCE_DISCONNECT`). Zablokowany użytkownik nie może ponownie się zalogować.
+Administrator może przeglądać użytkowników (`ADMIN_USERS_REQUEST`), usuwać konta (`DELETE_USER`) i zmieniać role (`SET_USER_ROLE`). Usunięcie konta online użytkownika powoduje wysłanie `ACCOUNT_DELETED` i zamknięcie jego sesji. Zmiana roli online użytkownikowi powoduje wysłanie `ROLE_CHANGED` i aktualizację sesji w pamięci. Serwer chroni przed usunięciem ostatniego administratora (`4044 LAST_ADMIN`).
 
-### Planowane rozszerzenia protokołu
+### UC9 — Moderacja pokoju *(nowy względem Etapu 2)*
 
-W ramach dalszego rozwoju przewidziane są dwa dodatkowe typy wiadomości:
+Administrator może wyrzucić (`ROOM_KICK`) lub zbanować (`ROOM_BAN`) użytkownika z pokoju. Wyrzucony użytkownik traci dostęp do pokoju do czasu nowego zaproszenia. Zbanowany użytkownik nie może ponownie dołączyć do pokoju nawet po zaproszeniu. Ban można cofnąć przez `ROOM_UNBAN`.
 
-- `HISTORY_REQUEST` — żądanie pobrania historii wiadomości pokoju (klient → serwer),
-- `HISTORY_RESPONSE` — odpowiedź serwera zawierająca historię wiadomości.
+### UC10 — System znajomych *(nowy względem Etapu 2)*
 
-Rozszerzenie umożliwi odtworzenie historii po reconnect, synchronizację stanu klienta oraz pobieranie starszych wiadomości.
+Użytkownik wysyła `FRIEND_REQUEST` do innego użytkownika online. Odbiorca widzi dialog i może zaakceptować (`FRIEND_REQUEST_ACCEPT`) lub odrzucić (`FRIEND_REQUEST_DECLINE`). Po akceptacji obaj pojawiają się na swoich listach znajomych. Statusy znajomych aktualizowane są w czasie rzeczywistym przez `FRIEND_STATUS_UPDATE`.
 
 ---
 
-## 8. Bezpieczeństwo
+## 11. Bezpieczeństwo
 
 ### Poufność
 
@@ -413,16 +646,16 @@ Całe połączenie szyfrowane przez TLS 1.3. Dozwolone szyfry: `TLS_AES_256_GCM_
 
 ### Integralność wiadomości
 
-Każda wiadomość `SEND_MESSAGE` zawiera pole `hmac` — HMAC-SHA256 obliczony z konkatenacji `msg_id + ts + seq_id + body`. Klucz (`hmac_secret`) wymieniany przy logowaniu w `LOGIN_OK`, chroniony przez TLS.
+Każda wiadomość `SEND_MESSAGE` zawiera pole `hmac` — HMAC-SHA256 z konkatenacji `msg_id + ts + seq_id + body`. Klucz (`hmac_secret`) wymieniany przy logowaniu w `LOGIN_OK`, chroniony przez TLS.
 
 ### Uwierzytelnienie
 
-Klient wysyła `username + password + nonce`. Hasło nigdy nie jest eksponowane w sieci (chronione przez TLS). Serwer weryfikuje względem `bcrypt(password)` i wydaje token JWT (HS256, TTL 3600 s).
+Klient wysyła `username + password + nonce`. Hasło nigdy nie jest eksponowane w sieci (TLS). Serwer weryfikuje względem `bcrypt(password)` i wydaje token JWT (HS256, TTL 3600 s).
 
 ### Ochrona przed replay
 
-- pole `nonce` w `LOGIN` — jednorazowe, serwer przechowuje użyte nonce przez 300 s,
-- pole `ts` — serwer odrzuca wiadomości z timestampem oddalonym o więcej niż ±300 s,
+- pole `nonce` w `LOGIN` — jednorazowe, serwer przechowuje użyte nonce przez 300 s (w pamięci i tabeli `used_nonces`),
+- pole `ts` — serwer odrzuca wiadomości z timestampem oddalonym o więcej niż ±300 s (błąd 4003),
 - pole `msg_id` — serwer przechowuje odebrane `msg_id` przez 5 minut; duplikat jest odrzucany.
 
 ### Model zagrożeń
@@ -434,12 +667,14 @@ Klient wysyła `username + password + nonce`. Hasło nigdy nie jest eksponowane 
 | Replay attack | nonce + timestamp + msg_id cache |
 | Fałszowanie treści wiadomości | HMAC-SHA256 na body |
 | Brute-force logowania | rate limit: max 5 prób / 60 s / IP |
-| Flooding serwera | max rozmiar 64 KB, rate limit SEND_MESSAGE |
+| Flooding serwera | max 64 KB / wiadomość, max 30 wiad. / 10 s / użytkownik |
 | Przejęcie sesji | JWT z TTL, unieważnienie po BYE |
+| Działanie admina na własnym koncie | błąd 4033 SELF_ACTION_FORBIDDEN |
+| Usunięcie ostatniego admina | błąd 4044 LAST_ADMIN |
 
 ---
 
-## 9. Obsługa błędów
+## 12. Obsługa błędów
 
 ### Kody błędów
 
@@ -454,214 +689,314 @@ Klient wysyła `username + password + nonce`. Hasło nigdy nie jest eksponowane 
 | 4012 | LOGIN_RATE_LIMIT | przekroczono limit prób logowania |
 | 4031 | UNAUTHORIZED | brak lub nieważny token sesji |
 | 4032 | FORBIDDEN | brak uprawnień do zasobu |
+| 4033 | SELF_ACTION_FORBIDDEN | próba wykonania operacji na własnym koncie |
 | 4041 | ROOM_NOT_FOUND | pokój nie istnieje |
 | 4042 | USER_NOT_FOUND | nieznany użytkownik |
+| 4043 | ROOM_BANNED | użytkownik jest zbanowany w pokoju |
+| 4044 | LAST_ADMIN | nie można usunąć ostatniego administratora |
+| 4091 | USERNAME_TAKEN | nazwa użytkownika jest zajęta |
+| 4092 | USERNAME_INVALID | niepoprawny format nazwy użytkownika |
+| 4093 | INVALID_ROLE | niepoprawna rola (dozwolone: user, admin) |
 | 4291 | SEND_RATE_LIMIT | przekroczono limit wiadomości |
 | 5001 | SERVER_ERROR | wewnętrzny błąd serwera |
 | 5002 | SERVER_OVERLOAD | serwer przeciążony |
 
 ### Zachowanie po błędach
 
-- błąd formatu (4001–4004): serwer odsyła `ERROR` i zamyka połączenie TCP po 3 kolejnych błędach w ciągu 60 s,
+- błąd formatu (4001–4004): serwer odsyła `ERROR` i zamyka TCP po 3 kolejnych błędach w ciągu 60 s,
 - błąd HMAC (4005): wiadomość odrzucona, sesja utrzymana,
 - błąd autoryzacji (4031): po 3 wystąpieniach w ciągu 60 s — rozłączenie,
 - rate limit (4291): okno max 30 wiadomości / 10 s / użytkownik.
 
 ---
 
-## 10. Testy
+## 13. Testy
 
-### Testy funkcjonalne
+### Przegląd pokrycia
 
-- poprawne logowanie i wylogowanie,
-- wysyłanie i odbieranie wiadomości w pokoju,
-- komunikacja prywatna 1:1,
-- dołączanie i opuszczanie pokojów,
-- reconnect po utracie połączenia.
+Testy jednostkowe obejmują **111 przypadków testowych** w 5 plikach testowych. Klient nie ma jeszcze testów jednostkowych (pliki `test_connection.py` i `test_sender.py` są placeholderami).
 
-### Testy błędów
+| Plik | Moduł | Liczba testów |
+|---|---|---|
+| `test_auth.py` | `AuthManager` | 22 |
+| `test_messaging.py` | `Session`, `SessionManager`, `validate_envelope` | 25 |
+| `test_rate_limiter.py` | `RateLimiter` | 19 |
+| `test_room_manager.py` | `RoomManager` | 17 |
+| `test_admin.py` | handlery admin | 28 |
+| **Razem** | | **111** |
 
-- niepoprawny JSON,
-- nieznany typ wiadomości,
-- invalid HMAC,
-- wygasły JWT,
-- timeout PONG.
+### test_auth.py — AuthManager (22 testy)
 
-### Testy bezpieczeństwa
+**Nonce (4 testy)**
 
-- brute-force logowania,
-- replay attack z ponownym użyciem nonce,
-- duplikaty wiadomości (ten sam msg_id),
-- próby wejścia do prywatnego pokoju.
+| Test | Opis |
+|---|---|
+| `test_fresh_nonce_accepted` | nonce użyty po raz pierwszy jest akceptowany |
+| `test_duplicate_nonce_rejected` | ten sam nonce odrzucony przy drugim użyciu |
+| `test_different_nonces_accepted` | różne nonce są niezależne |
+| `test_expired_nonce_cleared_and_accepted_again` | nonce starszy niż TTL jest usuwany i akceptowany ponownie |
 
-### Testy obciążeniowe
+**Rate limit logowań (5 testów)**
 
-- wielu równoczesnych klientów (cel: 100+),
-- wysoka liczba wiadomości w krótkim czasie,
-- reconnect storm,
-- spam wiadomościami (rate limiter).
+| Test | Opis |
+|---|---|
+| `test_first_attempt_allowed` | pierwsza próba logowania zawsze dozwolona |
+| `test_within_limit_allowed` | próby do limitu MAX_LOGIN_ATTEMPTS dozwolone |
+| `test_exceeding_limit_blocked` | próba po przekroczeniu limitu zablokowana |
+| `test_different_ips_independent` | blokada jednego IP nie wpływa na inne |
+| `test_old_attempts_expire` | stare próby (>60 s) wygasają, okno resetuje się |
+
+**JWT (4 testy)**
+
+| Test | Opis |
+|---|---|
+| `test_generate_and_verify_token` | wygenerowany token zawiera poprawne pola sub/username/role |
+| `test_expired_token_returns_none` | wygasły token nie jest akceptowany |
+| `test_invalid_token_returns_none` | niepoprawny string zwraca None |
+| `test_token_with_wrong_secret_returns_none` | token podpisany złym kluczem zwraca None |
+
+**Hashowanie haseł (3 testy)**
+
+| Test | Opis |
+|---|---|
+| `test_hash_is_not_plaintext` | hash nie jest równy plaintext |
+| `test_hash_verifiable_with_bcrypt` | hash jest weryfikowalny przez bcrypt |
+| `test_different_calls_produce_different_hashes` | każde wywołanie produkuje inny hash (losowy salt) |
+
+**Weryfikacja użytkownika (4 testy)**
+
+| Test | Opis |
+|---|---|
+| `test_valid_credentials_return_user` | poprawne dane zwracają użytkownika |
+| `test_wrong_password_returns_none` | błędne hasło zwraca None |
+| `test_nonexistent_user_returns_none` | nieistniejący użytkownik zwraca None |
+| `test_blocked_user_returns_none` | zablokowane konto zwraca None |
+
+**HMAC secret (2 testy)**
+
+| Test | Opis |
+|---|---|
+| `test_generates_non_empty_string` | `generate_hmac_secret()` zwraca niepusty string |
+| `test_generates_unique_secrets` | kolejne wywołania zwracają różne wartości |
+
+### test_messaging.py — Session, SessionManager, validate_envelope (25 testów)
+
+**Wykrywanie duplikatów (5 testów)**
+
+| Test | Opis |
+|---|---|
+| `test_first_msg_not_duplicate` | pierwsze wystąpienie msg_id nie jest duplikatem |
+| `test_same_msg_id_is_duplicate` | to samo msg_id jest duplikatem |
+| `test_different_msg_ids_not_duplicate` | różne msg_id są niezależne |
+| `test_expired_msg_id_cleared` | msg_id starszy niż 300 s jest usuwany |
+| `test_fresh_msg_id_retained` | świeże msg_id pozostaje w cache |
+
+**Liczniki błędów (4 testy)**
+
+| Test | Opis |
+|---|---|
+| `test_format_error_increments` | licznik błędów formatu rośnie |
+| `test_auth_error_increments` | licznik błędów autoryzacji rośnie |
+| `test_format_errors_expire` | stare błędy (>60 s) wygasają |
+| `test_auth_errors_expire` | stare błędy autoryzacji wygasają |
+
+**SessionManager (5 testów)**
+
+| Test | Opis |
+|---|---|
+| `test_create_session_returns_session` | `create_session()` zwraca Session w stanie CONNECTED |
+| `test_activate_session` | `activate_session()` zmienia stan na ACTIVE i indeksuje po user_id |
+| `test_remove_session` | `remove_session()` usuwa sesję i zmienia stan na CLOSED |
+| `test_get_timed_out` | `get_timed_out()` zwraca sesje z przekroczonym timeout |
+| `test_all_active` | `all_active()` zwraca wszystkie aktywne sesje |
+
+**validate_envelope (11 testów)**
+
+| Test | Opis |
+|---|---|
+| `test_valid_login_envelope` | poprawna koperta LOGIN przechodzi walidację |
+| `test_valid_authenticated_envelope` | poprawna koperta z tokenem przechodzi walidację |
+| `test_missing_type_field` | brak `type` → 4001 MALFORMED_ENVELOPE |
+| `test_missing_msg_id_field` | brak `msg_id` → 4001 MALFORMED_ENVELOPE |
+| `test_missing_ts_field` | brak `ts` → 4001 MALFORMED_ENVELOPE |
+| `test_unknown_type` | nieznany typ → 4002 UNKNOWN_TYPE |
+| `test_timestamp_too_old` | ts >300 s w przeszłość → 4003 TIMESTAMP_SKEW |
+| `test_timestamp_too_future` | ts >300 s w przyszłość → 4003 TIMESTAMP_SKEW |
+| `test_missing_token_for_authenticated_type` | brak tokenu dla SEND_MESSAGE → 4031 UNAUTHORIZED |
+| `test_login_does_not_require_token` | LOGIN nie wymaga tokenu |
+| `test_delete_room_type_recognized` | DELETE_ROOM rozpoznawany jako poprawny typ |
+
+### test_rate_limiter.py — RateLimiter (19 testów)
+
+**Rate limit wiadomości (5 testów)**
+
+| Test | Opis |
+|---|---|
+| `test_first_message_allowed` | pierwsza wiadomość dozwolona |
+| `test_within_limit_allowed` | wiadomości do limitu MAX_MESSAGES_PER_WINDOW dozwolone |
+| `test_exceeding_limit_blocked` | wiadomość po przekroczeniu limitu zablokowana |
+| `test_different_users_independent` | blokada jednego user_id nie wpływa na innych |
+| `test_window_expires` | okno 10 s wygasa i limit resetuje się |
+
+**Rate limit logowań (5 testów)**
+
+| Test | Opis |
+|---|---|
+| `test_first_attempt_allowed` | pierwsza próba dozwolona |
+| `test_within_limit_allowed` | próby do limitu dozwolone |
+| `test_exceeding_limit_blocked` | próba po przekroczeniu zablokowana |
+| `test_different_ips_independent` | blokada IP nie wpływa na inne |
+| `test_window_expires` | okno 60 s wygasa i limit resetuje się |
+
+**Limit połączeń (7 testów)**
+
+| Test | Opis |
+|---|---|
+| `test_first_connection_allowed` | pierwsze połączenie z IP dozwolone |
+| `test_connections_up_to_limit_allowed` | połączenia do MAX_CONNECTIONS_PER_IP dozwolone |
+| `test_exceeding_connection_limit_blocked` | połączenie po przekroczeniu limitu zablokowane |
+| `test_unregister_frees_slot` | `unregister_connection()` zwalnia slot dla nowego połączenia |
+| `test_get_connection_count` | `get_connection_count()` zwraca poprawną liczbę |
+| `test_unregister_not_below_zero` | unregister dla niezarejestrowanego IP nie powoduje błędu |
+| `test_different_ips_independent` | limity połączeń dla różnych IP są niezależne |
+
+**Czyszczenie (2 testy)**
+
+| Test | Opis |
+|---|---|
+| `test_cleanup_removes_expired_message_windows` | `cleanup()` usuwa wygasłe wpisy z okien wiadomości |
+| `test_cleanup_keeps_fresh_entries` | `cleanup()` nie usuwa świeżych wpisów |
+
+### test_room_manager.py — RoomManager (17 testów)
+
+**Pobieranie pokoju (2 testy)**
+
+| Test | Opis |
+|---|---|
+| `test_returns_room_dict_when_exists` | istniejący pokój zwracany jako dict |
+| `test_returns_none_when_not_exists` | nieistniejący pokój zwraca None |
+
+**Kontrola dostępu (4 testy)**
+
+| Test | Opis |
+|---|---|
+| `test_public_room_grants_access` | publiczny pokój dostępny dla każdego |
+| `test_private_room_user_in_acl` | prywatny pokój dostępny dla użytkownika z ACL |
+| `test_private_room_user_not_in_acl` | prywatny pokój niedostępny bez ACL |
+| `test_nonexistent_room_denies_access` | nieistniejący pokój zawsze odmawia dostępu |
+
+**Dołączanie i opuszczanie (5 testów)**
+
+| Test | Opis |
+|---|---|
+| `test_join_public_room` | dołączenie do pokoju publicznego działa |
+| `test_join_denied_for_no_access` | brak ACL blokuje dołączenie do pokoju prywatnego |
+| `test_join_respects_room_limit` | przekroczenie MAX_ROOMS_PER_USER blokuje dołączenie |
+| `test_leave_room` | opuszczenie pokoju usuwa użytkownika z members |
+| `test_leave_all_rooms` | `leave_all_rooms()` usuwa użytkownika ze wszystkich pokojów |
+
+**Zarządzanie pokojami (1 test)**
+
+| Test | Opis |
+|---|---|
+| `test_remove_room` | `remove_room()` usuwa pokój z pamięci in-memory |
+
+**Członkowie pokoju (3 testy)**
+
+| Test | Opis |
+|---|---|
+| `test_get_room_members_empty` | pusty pokój zwraca pusty set |
+| `test_get_room_members_copy` | `get_room_members()` zwraca kopię (modyfikacja nie psuje oryginału) |
+| `test_get_user_rooms` | `get_user_rooms()` zwraca pokoje, do których należy użytkownik |
+
+**Lista publicznych pokojów (2 testy)**
+
+| Test | Opis |
+|---|---|
+| `test_returns_public_rooms` | poprawne pobranie pokojów z bazy |
+| `test_returns_empty_when_no_rooms` | pusta lista gdy brak pokojów |
+
+### test_admin.py — handlery administracyjne (28 testów)
+
+**handle_create_room (6 testów)**
+
+| Test | Opis |
+|---|---|
+| `test_non_admin_gets_forbidden` | nie-admin otrzymuje 4032 FORBIDDEN |
+| `test_missing_room_name_gets_error` | pusta nazwa → 4001 MALFORMED_ENVELOPE |
+| `test_duplicate_room_name_gets_error` | istniejąca nazwa → błąd duplikatu |
+| `test_success_creates_room_and_sends_ok` | poprawne tworzenie zwraca CREATE_ROOM_OK z nazwą |
+| `test_private_room_adds_admin_to_acl` | pokój prywatny → INSERT do room_acl |
+| `test_room_name_too_long_gets_error` | nazwa > MAX_NAME_LENGTH → 4001 MALFORMED_ENVELOPE |
+
+**handle_delete_room (5 testów)**
+
+| Test | Opis |
+|---|---|
+| `test_non_admin_gets_forbidden` | nie-admin otrzymuje 4032 FORBIDDEN |
+| `test_missing_room_id_gets_error` | brak room_id → 4001 MALFORMED_ENVELOPE |
+| `test_nonexistent_room_gets_not_found` | nieistniejący pokój → 4041 ROOM_NOT_FOUND |
+| `test_success_notifies_members_and_cleans_up` | usunięcie rozsyła ROOM_EVENT i czyści in-memory |
+| `test_delete_event_includes_deleted_by` | ROOM_EVENT zawiera pole `deleted_by` z nazwą admina |
+
+**handle_admin_users_request (2 testy)**
+
+| Test | Opis |
+|---|---|
+| `test_non_admin_gets_forbidden` | nie-admin otrzymuje 4032 FORBIDDEN |
+| `test_success_returns_users_list` | poprawna odpowiedź ADMIN_USERS_LIST z listą użytkowników |
+
+**handle_delete_user (7 testów)**
+
+| Test | Opis |
+|---|---|
+| `test_non_admin_gets_forbidden` | nie-admin → 4032 FORBIDDEN |
+| `test_missing_user_id_gets_error` | brak user_id → 4001 MALFORMED_ENVELOPE |
+| `test_cannot_delete_self` | próba usunięcia własnego konta → 4033 SELF_ACTION_FORBIDDEN |
+| `test_user_not_found` | nieistniejący użytkownik → 4042 USER_NOT_FOUND |
+| `test_cannot_delete_last_admin` | usunięcie ostatniego admina → 4044 LAST_ADMIN |
+| `test_success_deletes_offline_user` | usunięcie offline użytkownika → DELETE_USER_OK |
+| `test_success_notifies_online_user_and_closes_session` | usunięcie online → ACCOUNT_DELETED + zamknięcie sesji |
+
+**handle_set_user_role (8 testów)**
+
+| Test | Opis |
+|---|---|
+| `test_non_admin_gets_forbidden` | nie-admin → 4032 FORBIDDEN |
+| `test_missing_fields_gets_error` | brak pola role → 4001 MALFORMED_ENVELOPE |
+| `test_invalid_role_gets_error` | rola "superuser" → 4093 INVALID_ROLE |
+| `test_cannot_change_own_role` | zmiana własnej roli → 4033 SELF_ACTION_FORBIDDEN |
+| `test_user_not_found` | nieistniejący użytkownik → 4042 USER_NOT_FOUND |
+| `test_cannot_demote_last_admin` | degradacja ostatniego admina → 4044 LAST_ADMIN |
+| `test_success_promotes_user` | awans do admin → UPDATE w bazie + SET_USER_ROLE_OK |
+| `test_success_notifies_online_user` | zmiana roli online → ROLE_CHANGED do użytkownika + aktualizacja sesji |
 
 ### Uruchomienie testów
 
 ```bash
+# Wszystkie testy
 pytest tests/ -v
-pytest tests/ -v --asyncio-mode=auto
+
+# Tylko testy serwera
+pytest tests/test_server/ -v
+
+# Konkretny moduł
+pytest tests/test_server/test_auth.py -v
+
+# Z raportem pokrycia (jeśli zainstalowany pytest-cov)
+pytest tests/ --cov=server --cov=shared --cov-report=term-missing
 ```
----
 
-## 11. Zaproszenia do pokojów prywatnych
-
-### Mechanizm
-
-System zaproszeń pozwala administratorowi zapraszać użytkowników do pokojów prywatnych bez ręcznej edycji bazy danych. Przepływ:
-
-1. Admin otwiera listę pokojów (przycisk **+** w sidebarze).
-2. Przy pokojach prywatnych widzi przycisk **✉** (tylko dla roli `admin`).
-3. Admin wpisuje nazwę użytkownika i wysyła zaproszenie.
-4. Użytkownik otrzymuje okno dialogowe z możliwością akceptacji lub odrzucenia.
-5. Po akceptacji użytkownik zostaje dodany do `room_acl` i automatycznie dołącza do pokoju.
-
-### Nowe typy wiadomości
-
-| Typ | Kierunek | Opis |
-|---|---|---|
-| `ROOM_INVITE` | S → C | zaproszenie do prywatnego pokoju |
-| `ROOM_INVITE_ACCEPT` | C → S | akceptacja zaproszenia |
-| `ROOM_INVITE_DECLINE` | C → S | odrzucenie zaproszenia |
-
-### Ograniczenia
-
-- Zaproszenia może wysyłać tylko użytkownik z rolą `admin`.
-- Zapraszany użytkownik musi być online (aktywna sesja).
-- Po akceptacji wpis trafia do tabeli `room_acl` i jest trwały.
-
----
-
-## 12. Szczegóły implementacji GUI
-
-### Struktura okien
-
-- **LoginWindow** — modal z polami username/hasło, blokuje główne okno do czasu zalogowania.
-- **ChatWindow** — główny widok podzielony na sidebar (pokoje, użytkownicy) i obszar czatu.
-- **BrowseRoomsDialog** — lista dostępnych pokojów z możliwością dołączenia; dla admina przyciski zaproszeń przy pokojach prywatnych.
-- **InviteDialog** — powiadomienie o zaproszeniu z przyciskami Akceptuj/Odrzuć.
-- **SendInviteDialog** — formularz wysyłania zaproszenia (wpisanie nazwy użytkownika).
-
-### Historia wiadomości per pokój
-
-Każdy pokój ma własną historię wiadomości przechowywaną w pamięci klienta. Przełączanie między pokojami odświeża widok czatu i pokazuje tylko wiadomości z aktualnego pokoju. Historia zawiera trzy rodzaje wpisów: wiadomości (bąbelki), wiadomości systemowe (zdarzenia pokoju) i wiadomości niewyslane (oznaczone czerwonym tłem).
-
-### Wiadomości niewyslane
-
-Jeśli użytkownik opuścił pokój po wysłaniu wiadomości, wiadomość wyświetlana jest z ciemnoczerwonym tłem i informacją `⚠ Nie wysłano — opuściłeś pokój`.
-
-### Placeholder braku pokoju
-
-Gdy użytkownik nie należy do żadnego pokoju, obszar czatu wyświetla duży napis z ikoną 💬 i instrukcją wyboru pokoju. Próba wysłania wiadomości bez aktywnego pokoju powoduje podświetlenie nagłówka na czerwono z komunikatem `⚠ Wybierz pokój!`.
-
-### Asyncio + Tkinter
-
-GUI działa w głównym wątku Tkintera, a protokół RCMP w osobnym wątku z własną pętlą asyncio. Komunikacja między wątkami odbywa się przez `asyncio.run_coroutine_threadsafe` (wątek GUI → asyncio) oraz `self.after(0, callback)` (asyncio → wątek GUI).
-
----
-
-## 13. Konfiguracja PyCharm
-
-W folderze `.idea/runConfigurations/` znajdują się gotowe konfiguracje uruchomienia:
-
-| Konfiguracja | Opis |
-|---|---|
-| `RCMP Server` | uruchamia serwer (`python -m server.main`) |
-| `RCMP Client` | uruchamia klienta (`python -m client.main`) |
-| `RCMP Seed DB` | wypełnia bazę testowymi danymi |
-| `RCMP Generate Certs` | generuje certyfikaty TLS |
-
-Każda konfiguracja ma ustawiony `Working directory` na korzeń projektu, co zapewnia poprawne wczytanie `.env` i certyfikatów.
+> **Screenshot:** wynik `pytest -v` w terminalu  
+> `📸 [SCREENSHOT: terminal — pytest -v z listą 111 testów i statusem PASSED]`
 
 ---
 
 ## 14. Znane ograniczenia
 
-- Lista pokojów w kliencie jest hardcodowana (3 pokoje). Docelowo powinna być pobierana z serwera przez dedykowany typ wiadomości `ROOMS_LIST`.
-- Historia wiadomości przechowywana jest tylko w pamięci klienta — po restarcie jest tracona. Docelowo można ją pobierać z bazy przez `HISTORY_REQUEST / HISTORY_RESPONSE`.
-- Zapraszany użytkownik musi być online — zaproszenia dla offline użytkowników nie są kolejkowane.
-- Certyfikaty TLS są self-signed — w produkcji należy użyć certyfikatu od zaufanego CA.
----
-
-## 15. System znajomych
-
-### Mechanizm
-
-System znajomych umożliwia użytkownikom nawiązywanie relacji 1:1 i prowadzenie prywatnych rozmów. Zaproszenie można wysłać tylko do użytkownika który jest aktualnie online.
-
-### Przepływ zaproszenia
-
-1. Użytkownik klika pseudonim innego użytkownika w czacie grupowym (pseudonim jest podkreślony i klikalny) lub klika znajomego z listy.
-2. Otwiera się okno **Dodaj znajomego** z wypełnioną nazwą użytkownika.
-3. Po wysłaniu zaproszenia odbiorca widzi okno dialogowe z przyciskami **Akceptuj** / **Odrzuć**.
-4. Po akceptacji obaj użytkownicy pojawiają się na swoich listach znajomych.
-5. Odrzucenie zaproszenia nie powiadamia nadawcy.
-
-### Nowe typy wiadomości
-
-| Typ | Kierunek | Opis |
-|---|---|---|
-| `FRIEND_REQUEST` | C → S → C | zaproszenie do znajomych |
-| `FRIEND_REQUEST_ACCEPT` | C → S → C | akceptacja zaproszenia |
-| `FRIEND_REQUEST_DECLINE` | C → S | odrzucenie zaproszenia |
-| `FRIEND_STATUS_UPDATE` | S → C | zmiana statusu znajomego (online/offline) |
-| `FRIENDS_LIST` | S → C | lista znajomych wysyłana po zalogowaniu |
-| `DIRECT_MESSAGE` | C ↔ S ↔ C | wiadomość prywatna między znajomymi |
-
-### Lista znajomych w sidebarze
-
-Sekcja **ZNAJOMI** w sidebarze pokazuje wszystkich znajomych z kolorowym wskaźnikiem statusu:
-
-- 🟢 zielony — online
-- 🟡 żółty — away
-- ⚫ szary — offline
-
-Status aktualizuje się w czasie rzeczywistym gdy znajomy się loguje lub rozłącza. Kliknięcie znajomego otwiera okno Direct Message.
-
-### Direct Messages (DM)
-
-Każda rozmowa prywatna ma własne okno z historią wiadomości i statusem odbiorcy. Okno minimalizuje się zamiast zamykać — historię widać po ponownym otwarciu. Wiadomości DM są dostarczane tylko gdy odbiorca jest online.
-
-### Baza danych
-
-Nowa tabela `friendships`:
-
-| Kolumna | Typ | Opis |
-|---|---|---|
-| `user_id` | INTEGER | nadawca zaproszenia |
-| `friend_id` | INTEGER | odbiorca zaproszenia |
-| `status` | VARCHAR | `pending` / `accepted` / `declined` |
-| `created_at` | TIMESTAMPTZ | data wysłania zaproszenia |
-| `updated_at` | TIMESTAMPTZ | data ostatniej zmiany statusu |
-
-### Ograniczenia
-
-- Zaproszenie można wysłać tylko do użytkownika online.
-- Zaproszenia dla offline użytkowników nie są kolejkowane.
-- Historia DM przechowywana jest tylko w pamięci klienta — po restarcie jest tracona.
-
----
-
-## 16. Zmiany w protokole względem etapu 1
-
-Podczas implementacji protokół RCMP został rozszerzony o następujące typy wiadomości nieobecne w pierwotnej specyfikacji:
-
-| Typ | Powód dodania |
-|---|---|
-| `ROOMS_LIST` | dynamiczne pobieranie listy pokojów z serwera zamiast hardcodowania |
-| `ROOM_INVITE` | zaproszenia do pokojów prywatnych przez GUI |
-| `ROOM_INVITE_ACCEPT` | akceptacja zaproszenia do pokoju |
-| `ROOM_INVITE_DECLINE` | odrzucenie zaproszenia do pokoju |
-| `FRIEND_REQUEST` | zaproszenie do znajomych |
-| `FRIEND_REQUEST_ACCEPT` | akceptacja zaproszenia do znajomych |
-| `FRIEND_REQUEST_DECLINE` | odrzucenie zaproszenia do znajomych |
-| `FRIEND_STATUS_UPDATE` | powiadomienie o zmianie statusu znajomego |
-| `FRIENDS_LIST` | lista znajomych po zalogowaniu |
-| `DIRECT_MESSAGE` | wiadomości prywatne 1:1 między znajomymi |
-
-Wszystkie rozszerzenia zachowują kompatybilność z oryginalną kopertą protokołu (`type`, `msg_id`, `ts`, `token`, `payload`).
+- **Historia wiadomości** przechowywana wyłącznie w pamięci klienta — po restarcie jest tracona. Planowane rozszerzenie `HISTORY_REQUEST`/`HISTORY_RESPONSE` nie zostało zaimplementowane.
+- **Zaproszenia do pokojów i znajomych** działają tylko dla użytkowników online — zaproszenia dla offline użytkowników nie są kolejkowane.
+- **`BLOCK_USER`/`UNBLOCK_USER`** jako dedykowane typy wiadomości nie zostały zaimplementowane — flaga `is_blocked` istnieje w schemacie bazy i jest sprawdzana przy logowaniu, ale admin nie może jej zmienić przez protokół (tylko przez bezpośrednią edycję bazy).
+- **Certyfikaty TLS** są self-signed — w środowisku produkcyjnym należy użyć certyfikatu od zaufanego CA.
+- **Testy klienta** (`test_connection.py`, `test_sender.py`) są placeholderami — pokrycie testami dotyczy wyłącznie serwera.
+- **Status `away`** nie jest obsługiwany przez GUI — klient zawsze prezentuje status `online`.
