@@ -43,7 +43,7 @@ async def handle_join_room(
         return
 
     # Sprawdź uprawnienia i dołącz
-    success = await room_manager.join_room(room_id, session.user_id)
+    success = await room_manager.join_room(room_id, session.user_id, session.role)
     if not success:
         await router.send_error(session.writer, ErrorCode.FORBIDDEN,
                                 ErrorCode.get_message(ErrorCode.FORBIDDEN), msg_id)
@@ -160,7 +160,12 @@ async def handle_room_members(
                                 ErrorCode.get_message(ErrorCode.ROOM_NOT_FOUND), msg_id)
         return
 
-    if not room_manager.is_member(room_id, session.user_id):
+    # Administratorzy mają zawsze dostęp do listy członków pokoju.
+    # Zwykli użytkownicy muszą być członkami pokoju (po JOIN_ROOM) lub mieć dostęp wg ACL.
+    has_access = (session.role == "admin") \
+        or room_manager.is_member(room_id, session.user_id) \
+        or await room_manager.check_access(room_id, session.user_id)
+    if not has_access:
         await router.send_error(session.writer, ErrorCode.FORBIDDEN,
                                 "Not a member of this room", msg_id)
         return

@@ -64,6 +64,18 @@ class RCMPSender:
     async def send_room_members_request(self, room_id: int) -> str:
         return await self.send("ROOM_MEMBERS_REQUEST", {"room_id": room_id})
 
+    async def send_room_history_request(self, room_id: int, limit: int = 100) -> str:
+        """Żąda trwałej historii wiadomości pokoju zapisanej w bazie."""
+        return await self.send("HISTORY_REQUEST", {
+            "history_type": "room", "room_id": room_id, "limit": limit,
+        })
+
+    async def send_dm_history_request(self, username: str, limit: int = 100) -> str:
+        """Żąda trwałej historii wiadomości prywatnych (DM) z danym użytkownikiem."""
+        return await self.send("HISTORY_REQUEST", {
+            "history_type": "dm", "username": username, "limit": limit,
+        })
+
     async def send_room_kick(self, room_id: int, user_id: int) -> str:
         return await self.send("ROOM_KICK", {"room_id": room_id, "user_id": user_id})
 

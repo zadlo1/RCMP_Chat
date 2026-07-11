@@ -317,20 +317,53 @@ class ChatWindow(ctk.CTkFrame):
 
         self._scroll_to_bottom()
 
-    def add_message(self, username: str, body: str, ts: int = None, own: bool = False):
+    def add_message(self, username: str, body: str, ts: int = None, own: bool = False,
+                     room_id: int = None):
         ts = ts or int(time.time() * 1000)
 
-        # Zapisz do historii pokoju
-        if self._current_room_id is not None:
-            self._room_histories.setdefault(self._current_room_id, []).append({
-                "kind": "message",
-                "username": username,
-                "body": body,
-                "ts": ts,
-                "own": own,
-            })
+        # Domyślnie wiadomość trafia do aktualnie otwartego pokoju, ale można
+        # jawnie podać room_id (np. DELIVER_MESSAGE dla pokoju innego niż widoczny),
+        # żeby zapisać ją w poprawnej historii nawet gdy użytkownik na nią nie patrzy.
+        target_room = room_id if room_id is not None else self._current_room_id
+        if target_room is None:
+            return
+
+        self._room_histories.setdefault(target_room, []).append({
+            "kind": "message",
+            "username": username,
+            "body": body,
+            "ts": ts,
+            "own": own,
+        })
+
+        if target_room == self._current_room_id:
             self._render_bubble(username, body, ts, own)
             self._scroll_to_bottom()
+
+    def load_room_history(self, room_id: int, messages: list, my_username: str = None):
+        """
+        Wstawia trwałą historię wiadomości pobraną z serwera (HISTORY_RESPONSE)
+        na początek lokalnej historii danego pokoju — przed wiadomościami/zdarzeniami
+        dodanymi już w bieżącej sesji (np. komunikat "Dołączyłeś do #pokój").
+        Dzięki temu historia jest widoczna w GUI również po ponownym zalogowaniu.
+        """
+        my_username = my_username or self.username
+        entries = [
+            {
+                "kind": "message",
+                "username": m.get("from_user", "?"),
+                "body": m.get("body", ""),
+                "ts": m.get("ts"),
+                "own": m.get("from_user") == my_username,
+            }
+            for m in messages
+        ]
+
+        existing = self._room_histories.get(room_id, [])
+        self._room_histories[room_id] = entries + existing
+
+        if room_id == self._current_room_id:
+            self._reload_messages()
 
     def add_system_message(self, text: str, room_id: int = None):
         target = room_id or self._current_room_id

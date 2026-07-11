@@ -46,3 +46,7 @@ class Config:
     MAX_ROOMS_PER_USER = 50
     MAX_NAME_LENGTH = 64
     MSG_ID_CACHE_TTL = 300
+
+    # Historia wiadomości
+    HISTORY_DEFAULT_LIMIT = 100
+    HISTORY_MAX_LIMIT = 200

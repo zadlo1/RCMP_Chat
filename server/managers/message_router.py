@@ -56,6 +56,18 @@ class MessageRouter:
 
     async def send_error(self, writer: asyncio.StreamWriter, code: int, message: str, ref_msg_id: str = None):
         """Wysyła ramkę ERROR bezpośrednio przez writer (przed zalogowaniem też działa)."""
+
+        # Debug logging dla błędu FORBIDDEN
+        if code == 4032:
+            import logging
+            import traceback
+            logger = logging.getLogger("rcmp.server")
+            logger.warning("Wysyłanie FORBIDDEN (4032, msg_id=%s): %s", ref_msg_id, message)
+            # Loguj stack trace aby zobaczyć skąd pochodzi błąd
+            for line in traceback.format_stack()[:-1]:
+                if 'site-packages' not in line and 'asyncio' not in line:
+                    logger.debug(line.strip())
+
         frame = {
             "type": "ERROR",
             "msg_id": _new_msg_id(),

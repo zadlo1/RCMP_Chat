@@ -151,17 +151,19 @@ class RoomManager:
     # Dołączanie i opuszczanie pokoju
     # ------------------------------------------------------------------
 
-    async def join_room(self, room_id: int, user_id: int) -> bool:
+    async def join_room(self, room_id: int, user_id: int, role: str = "user") -> bool:
         """
         Dodaje użytkownika do pokoju.
         Zwraca False jeśli pokój nie istnieje, brak dostępu lub limit pokojów.
+        Administratorzy mają zawsze dostęp do wszystkich pokojów (nawet prywatnych).
         """
         # Sprawdź limit pokojów na użytkownika
         user_rooms = self._get_user_rooms(user_id)
         if len(user_rooms) >= Config.MAX_ROOMS_PER_USER:
             return False
 
-        if not await self.check_access(room_id, user_id):
+        # Administratorzy mają zawsze dostęp, inni muszą spełniać check_access
+        if role != "admin" and not await self.check_access(room_id, user_id):
             return False
 
         if room_id not in self._room_members:

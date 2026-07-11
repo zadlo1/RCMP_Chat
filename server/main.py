@@ -21,6 +21,7 @@ from server.handlers.rooms import (
     handle_join_room, handle_leave_room,
     handle_room_members, handle_room_kick, handle_room_ban, handle_room_unban,
 )
+from server.handlers.history import handle_history_request
 from server.handlers.invite import (
     handle_room_invite_accept, handle_room_invite_decline, send_invite,
     deliver_pending_room_invites,
@@ -354,6 +355,9 @@ class RCMPServer:
 
         elif msg_type == MessageType.ROOM_MEMBERS_REQUEST:
             await handle_room_members(data, session, self.router, self.room_manager, self.session_manager, self.db_pool)
+
+        elif msg_type == MessageType.HISTORY_REQUEST:
+            await handle_history_request(data, session, self.router, self.room_manager, self.db_pool)
 
         elif msg_type == MessageType.ROOM_KICK:
             await handle_room_kick(data, session, self.router, self.room_manager, self.session_manager, self.push_rooms_list)

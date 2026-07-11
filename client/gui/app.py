@@ -47,6 +47,7 @@ class RCMPApp(ctk.CTk):
         self._members_dialog = None
         self._members_dialog_room_id: int = None
         self._admin_panel = None
+        self._history_loaded_rooms: set = set()  # room_id-y dla których pobrano już trwałą historię
 
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._run_loop, daemon=True)
@@ -125,6 +126,7 @@ class RCMPApp(ctk.CTk):
         self.receiver.on("PONG",            self._on_pong)
         self.receiver.on("ROOM_INVITE",     self._on_room_invite)
         self.receiver.on("ROOMS_LIST",          self._on_rooms_list)
+        self.receiver.on("HISTORY_RESPONSE",    self._on_history_response)
         self.receiver.on("FRIENDS_LIST",         self._on_friends_list)
         self.receiver.on("FRIEND_REQUEST",        self._on_friend_request_incoming)
         self.receiver.on("FRIEND_REQUEST_ACCEPT", self._on_friend_request_accepted)
@@ -234,7 +236,8 @@ class RCMPApp(ctk.CTk):
                             pass
             self.after(0, lambda: show_dm())
         else:
-            self.after(0, lambda: self._chat.add_message(username, body, ts, own))
+            room_id = payload.get("target_id")
+            self.after(0, lambda: self._chat.add_message(username, body, ts, own, room_id=room_id))
 
         await self.sender.send_message_ack(msg_id)
 
@@ -338,6 +341,33 @@ class RCMPApp(ctk.CTk):
         else:
             self._pending_rooms = pending
 
+    async def _on_history_response(self, data: dict):
+        """Odpowiedź na HISTORY_REQUEST — trwała historia pokoju lub DM z bazy danych."""
+        payload = data.get("payload", {})
+        history_type = payload.get("history_type")
+        messages = payload.get("messages", [])
+
+        logger.info("HISTORY_RESPONSE: type=%s, messages=%d", history_type, len(messages))
+
+        if history_type == "room":
+            room_id = payload.get("room_id")
+            logger.debug("Loading %d messages for room %s", len(messages), room_id)
+
+            def apply_room(_app=self, rid=room_id, msgs=messages):
+                if _app._chat:
+                    _app._chat.load_room_history(rid, msgs, _app._username)
+
+            self.after(0, lambda: apply_room())
+        elif history_type == "dm":
+            username = payload.get("username")
+
+            def apply_dm(_app=self, u=username, msgs=messages):
+                dm = _app._dm_windows.get(u)
+                if dm:
+                    dm.load_history(msgs, _app._username)
+
+            self.after(0, lambda: apply_dm())
+
     def _remove_room_from_sidebar(self, room_id: int):
         """Usuwa pokój z paska po lewej (np. po banie/wyrzuceniu — utrata dostępu)."""
         if self._current_room_id == room_id:
@@ -379,7 +409,8 @@ class RCMPApp(ctk.CTk):
         payload = data.get("payload", {})
         code = payload.get("code")
         msg = payload.get("message", "Błąd serwera")
-        logger.warning("ERROR %s: %s", code, msg)
+        msg_id = data.get("msg_id")
+        logger.warning("ERROR %s (msg_id=%s): %s", code, msg_id, msg)
 
         if not self._chat:
             # Błąd przed zalogowaniem — pokaż w oknie logowania
@@ -408,10 +439,12 @@ class RCMPApp(ctk.CTk):
             self.after(0, lambda: revert())
             self.after(0, lambda: self._show_info_popup(
                 "Brak dostępu", "Zostałeś zbanowany w tym pokoju."))
-        elif code in (4032, 4033, 4044, 4093):
-            # Błędy panelu administratora (FORBIDDEN, SELF_ACTION_FORBIDDEN,
-            # LAST_ADMIN, INVALID_ROLE) — pokaż jako popup w panelu, jeśli otwarty
+        elif code in (4033, 4044, 4093):
+            # Błędy panelu administratora (SELF_ACTION_FORBIDDEN, LAST_ADMIN, INVALID_ROLE)
             self.after(0, lambda m=msg: self._show_info_popup("Panel administratora", m))
+        elif code == 4032:
+            # FORBIDDEN - może dotyczyć różnych operacji, pokaż jako wiadomość systemową
+            self.after(0, lambda m=msg: self._chat.add_system_message(f"Brak dostępu: {m}"))
         else:
             self.after(0, lambda: self._chat.add_system_message(f"Błąd {code}: {msg}"))
 
@@ -903,7 +936,15 @@ class RCMPApp(ctk.CTk):
         self._chat.add_system_message(f"Dołączyłeś do #{room_name}")
 
         # Wyślij JOIN_ROOM do serwera
+        logger.debug("Wysyłanie JOIN_ROOM dla pokoju %s", room_id)
         self._run_async(self.sender.send_join_room(room_id))
+
+        # Pobierz trwałą historię pokoju z bazy (raz na sesję) — dzięki temu
+        # wiadomości są widoczne w GUI również po ponownym zalogowaniu.
+        if room_id not in self._history_loaded_rooms:
+            self._history_loaded_rooms.add(room_id)
+            logger.debug("Wysyłanie HISTORY_REQUEST dla pokoju %s", room_id)
+            self._run_async(self.sender.send_room_history_request(room_id))
 
     def _leave_room(self, room_id: int):
         self._run_async(self.sender.send_leave_room(room_id))
@@ -938,6 +979,11 @@ class RCMPApp(ctk.CTk):
             on_send=lambda body: self._send_dm(username, body),
         )
         self._dm_windows[username] = win
+
+        # Pobierz trwałą historię DM z bazy — okno jest świeże, więc jest to
+        # jedyne pobranie w tej sesji dla tego rozmówcy (okno tylko się chowa,
+        # nigdy nie jest niszczone, patrz DMWindow._on_close).
+        self._run_async(self.sender.send_dm_history_request(username))
 
     def _send_dm(self, target_username: str, body: str):
         self._run_async(self._async_send_dm(target_username, body))
@@ -1462,6 +1508,21 @@ class DMWindow(ctk.CTkToplevel):
         color = "#1D9E75" if status == "online" else "#888888"
         self._status_label.configure(
             text=f"● {status}", text_color=color)
+
+    def load_history(self, messages: list, my_username: str = None):
+        """
+        Wypełnia okno DM trwałą historią wiadomości pobraną z serwera
+        (HISTORY_RESPONSE), w kolejności chronologicznej — dzięki temu
+        rozmowa jest widoczna po ponownym otwarciu okna / zalogowaniu.
+        """
+        my_username = my_username or self.my_username
+        for m in messages:
+            self.add_message(
+                m.get("from_user", "?"),
+                m.get("body", ""),
+                m.get("ts"),
+                own=(m.get("from_user") == my_username),
+            )
 
     def _send(self):
         body = self._input.get().strip()
