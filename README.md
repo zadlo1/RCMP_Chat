@@ -82,6 +82,7 @@ Etap 2 definiował architekturę i przypadki użycia. Implementacja różni się
 | ✅ System znajomych (DM) | Nie planowany w Etapie 2 — dodany w trakcie implementacji jako naturalne rozszerzenie komunikacji 1:1 |
 | ✅ Moderacja pokojów (kick/ban) | Nie było w UC Etapu 2 — zaimplementowane jako rozszerzenie UC7 |
 | ✅ Tabele `room_bans`, `room_kicks`, `friendships` | Schemat bazy z Etapu 2 (Users, Rooms, Messages, ACL) rozszerzony o trzy nowe tabele |
+| ✅ Kolejkowanie DM i zaproszeń do pokoi offline | Nie planowane w Etapie 2 — DM do offline odbiorcy oraz `ROOM_INVITE` zapisywane są w bazie (`messages.delivered`, tabela `room_invites`) i dostarczane przy najbliższym `LOGIN_OK` zamiast być odrzucane |
 | ❌ `BLOCK_USER` / `UNBLOCK_USER` / `FORCE_DISCONNECT` | UC8 z Etapu 2 — **częściowo zrealizowane**: usuwanie kont i wymuszanie rozłączenia działa, dedykowana blokada konta (flaga `is_blocked`) jest w schemacie bazy, ale `BLOCK_USER`/`UNBLOCK_USER` nie są obsługiwane jako osobne typy wiadomości w protokole |
 | ❌ `HISTORY_REQUEST` / `HISTORY_RESPONSE` | Planowane jako rozszerzenie w Etapie 2 — **nie zaimplementowane** |
 
@@ -243,7 +244,7 @@ Jeśli klient nie otrzyma `MESSAGE_ACK` w ciągu 5 s, ponawia `SEND_MESSAGE` z t
 2. Klient wysyła `LOGIN` z `username`, `password`, `nonce`.
 3. Serwer weryfikuje dane względem bcrypt hash w bazie, sprawdza nonce.
 4. Serwer odsyła `LOGIN_OK` z tokenem JWT i `hmac_secret`.
-5. Serwer wysyła `FRIENDS_LIST` oraz `ROOMS_LIST` po zalogowaniu.
+5. Serwer wysyła `FRIENDS_LIST` oraz `ROOMS_LIST` po zalogowaniu, a następnie dostarcza zaległe DM-y i `ROOM_INVITE` zebrane podczas gdy użytkownik był offline (ramki oznaczone `queued: true` w payloadzie).
 6. Klient może dołączać do pokojów oraz wysyłać wiadomości.
 7. Serwer przekazuje wiadomości odbiorcom przez `DELIVER_MESSAGE`.
 8. Odbiorcy potwierdzają odbiór przez `MESSAGE_ACK`.
@@ -327,6 +328,7 @@ LOG_LEVEL=WARNING python -m server.main  # tylko ostrzeżenia i błędy
 | `body` | TEXT | treść wiadomości |
 | `hmac` | VARCHAR(64) | HMAC-SHA256 |
 | `sent_at` | TIMESTAMPTZ | czas wysłania |
+| `delivered` | BOOLEAN | `FALSE` dla DM wysłanej do offline odbiorcy — dostarczana przy jego najbliższym `LOGIN_OK`. Wiadomości do pokoju zawsze `TRUE` (broadcast, bez kolejkowania) |
 
 ### Tabela `friendships` *(nowa względem Etapu 2)*
 
@@ -356,6 +358,18 @@ LOG_LEVEL=WARNING python -m server.main  # tylko ostrzeżenia i błędy
 | `user_id` | INTEGER FK | wyrzucony użytkownik |
 | `kicked_by` | INTEGER FK | admin który wyrzucił |
 | `kicked_at` | TIMESTAMPTZ | data wyrzucenia |
+
+### Tabela `room_invites` *(nowa — kolejkowanie offline)*
+
+| Kolumna | Typ | Opis |
+|---|---|---|
+| `id` | SERIAL PK | identyfikator |
+| `room_id` | INTEGER FK | pokój, do którego zaproszono |
+| `invited_user_id` | INTEGER FK | zaproszony użytkownik |
+| `invited_by` | VARCHAR(64) | nazwa użytkownika, który zaprosił |
+| `created_at` | TIMESTAMPTZ | data wysłania zaproszenia |
+
+Wiersz tworzony tylko gdy zapraszany jest offline w momencie wysyłki `ROOM_INVITE`. Dostarczany i usuwany przy jego najbliższym `LOGIN_OK`.
 
 ### Tabela `used_nonces`
 
@@ -605,7 +619,7 @@ Klient generuje `SEND_MESSAGE` z `target_type=room`, `target_id`, `seq_id`, `bod
 
 ### UC4 — Wiadomość prywatna (DM)
 
-Klient wysyła `DIRECT_MESSAGE` do znajomego. Serwer odnajduje aktywną sesję odbiorcy i przekazuje wiadomość bezpośrednio. Przy braku aktywnej sesji wiadomość jest odrzucana (brak kolejkowania offline).
+Klient wysyła `DIRECT_MESSAGE` do znajomego. Jeśli odbiorca ma aktywną sesję, serwer przekazuje wiadomość bezpośrednio (`delivered = TRUE` w bazie). Jeśli odbiorca jest offline, wiadomość zapisywana jest w tabeli `messages` z `delivered = FALSE` i dostarczana automatycznie przy jego najbliższym `LOGIN_OK`, w kolejności wysłania. Nadawca otrzymuje `MESSAGE_ACK` niezależnie od statusu odbiorcy — brak sesji odbiorcy nie jest błędem.
 
 ### UC5 — Utrata połączenia i reconnect
 
@@ -709,7 +723,7 @@ Klient wysyła `username + password + nonce`. Hasło nigdy nie jest eksponowane 
 
 ### Przegląd pokrycia
 
-Testy jednostkowe obejmują **174 przypadki testowe** w 7 plikach testowych.
+Testy jednostkowe obejmują **185 przypadków testowych** w 8 plikach testowych.
 
 | Plik | Moduł | Liczba testów |
 |---|---|---|
@@ -718,9 +732,10 @@ Testy jednostkowe obejmują **174 przypadki testowe** w 7 plikach testowych.
 | `test_rate_limiter.py` | `RateLimiter` | 19 |
 | `test_room_manager.py` | `RoomManager` | 17 |
 | `test_admin.py` | handlery admin | 28 |
+| `test_offline_queue.py` | kolejkowanie DM i `ROOM_INVITE` offline | 11 |
 | `test_connection.py` | `RCMPConnection` | 27 |
 | `test_sender.py` | `RCMPSender` | 36 |
-| **Razem** | | **174** |
+| **Razem** | | **185** |
 
 Testy klienta (`test_connection.py`, `test_sender.py`) pokrywają całą logikę warstwy protokołu po stronie klienta bez GUI i bez rzeczywistego połączenia sieciowego.
 
@@ -971,6 +986,34 @@ Testy klienta (`test_connection.py`, `test_sender.py`) pokrywają całą logikę
 | `test_success_notifies_online_user` | zmiana roli online → ROLE_CHANGED do użytkownika + aktualizacja sesji |
 
 
+### test_offline_queue.py — kolejkowanie offline (11 testów)
+
+**DM do offline odbiorcy (4 testy)**
+
+| Test | Opis |
+|---|---|
+| `test_offline_recipient_inserted_with_delivered_false` | DM do offline usera zapisany z `delivered=False` |
+| `test_online_recipient_inserted_with_delivered_true` | DM do online usera zapisany z `delivered=True` |
+| `test_offline_recipient_still_gets_ack_to_sender` | nadawca dostaje `MESSAGE_ACK`, brak `ERROR` mimo offline odbiorcy |
+| `test_nonexistent_recipient_still_errors` | nieistniejący użytkownik nadal zwraca `USER_NOT_FOUND` |
+
+**Dostarczanie zaległych DM (3 testy)**
+
+| Test | Opis |
+|---|---|
+| `test_no_pending_messages_writes_nothing` | brak zaległości → brak zapisu/wysyłki |
+| `test_pending_messages_delivered_and_marked` | zaległe DM wysłane w kolejności i oznaczone `delivered=TRUE` po dostarczeniu |
+| `test_delivered_messages_marked_as_queued` | dostarczona ramka ma `payload.queued = True` |
+
+**ROOM_INVITE do offline użytkownika (4 testy)**
+
+| Test | Opis |
+|---|---|
+| `test_offline_invite_persisted` | zaproszenie offline zapisane w `room_invites` |
+| `test_online_invite_not_persisted` | zaproszenie online — brak zapisu do bazy |
+| `test_no_pending_invites_writes_nothing` | brak zaległych zaproszeń → brak wysyłki |
+| `test_pending_invites_delivered_and_cleared` | zaległe zaproszenie dostarczone i usunięte z `room_invites` |
+
 ### test_connection.py — RCMPConnection (27 testów)
 
 | Klasa | Testowane scenariusze |
@@ -1022,8 +1065,7 @@ pytest tests/ --cov=server --cov=client --cov=shared --cov-report=term-missing
 
 ## 14. Znane ograniczenia
 
-- **Historia wiadomości** przechowywana wyłącznie w pamięci klienta — po restarcie jest tracona. Planowane rozszerzenie `HISTORY_REQUEST`/`HISTORY_RESPONSE` nie zostało zaimplementowane.
-- **Zaproszenia do pokojów i znajomych** działają tylko dla użytkowników online — zaproszenia dla offline użytkowników nie są kolejkowane.
+- **Historia wiadomości** przechowywana wyłącznie w pamięci klienta — po restarcie jest tracona. Planowane rozszerzenie `HISTORY_REQUEST`/`HISTORY_RESPONSE` nie zostało zaimplementowane. (Wiadomości są zapisywane w tabeli `messages`, ale klient nie ma jeszcze protokołowej ścieżki, by je pobrać wstecz — kolejkowanie offline dostarcza tylko wiadomości *nadesłane w trakcie* nieobecności, nie pełną historię).
 - **`BLOCK_USER`/`UNBLOCK_USER`** jako dedykowane typy wiadomości nie zostały zaimplementowane — flaga `is_blocked` istnieje w schemacie bazy i jest sprawdzana przy logowaniu, ale admin nie może jej zmienić przez protokół (tylko przez bezpośrednią edycję bazy).
 - **Certyfikaty TLS** są self-signed — w środowisku produkcyjnym należy użyć certyfikatu od zaufanego CA. Po stronie klienta ustawione jest `check_hostname=False`, co jest kompromisem dla certyfikatów self-signed; produkcyjnie należy włączyć weryfikację hostname.
 - **Testy integracyjne end-to-end** nie zostały zaimplementowane — brak testu łączącego rzeczywistego klienta z rzeczywistym serwerem bez mocków.

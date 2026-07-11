@@ -91,10 +91,13 @@ async def send_invite(
     room_id: int,
     room_name: str,
     invited_by: str,
+    db_pool: asyncpg.Pool = None,
 ):
     """
     Wysyła ROOM_INVITE do konkretnego użytkownika.
     Wywoływane przez admina z handlera SEND_MESSAGE z flagą invite.
+    Jeśli użytkownik jest offline i podano db_pool, zaproszenie zostaje
+    zakolejkowane w room_invites i dostarczone przy jego najbliższym LOGIN_OK.
     """
     frame = {
         "type": "ROOM_INVITE",
@@ -107,4 +110,58 @@ async def send_invite(
             "invited_by": invited_by,
         }
     }
-    await router.send_to_user(target_user_id, frame)
+    delivered = await router.send_to_user(target_user_id, frame)
+
+    if not delivered and db_pool is not None:
+        await db_pool.execute(
+            """
+            INSERT INTO room_invites (room_id, invited_user_id, invited_by)
+            VALUES ($1, $2, $3)
+            """,
+            room_id, target_user_id, invited_by
+        )
+
+
+async def deliver_pending_room_invites(
+    session: Session,
+    router: MessageRouter,
+    db_pool: asyncpg.Pool,
+):
+    """
+    Wysyła zaproszenia do pokojów które przyszły podczas gdy użytkownik
+    był offline. Wywoływane po LOGIN_OK. Wiersze usuwane po dostarczeniu —
+    zaproszenie ma sens tylko raz, klient odpowiada ROOM_INVITE_ACCEPT/DECLINE.
+    """
+    rows = await db_pool.fetch(
+        """
+        SELECT ri.id, ri.room_id, ri.invited_by, r.name AS room_name, r.is_private
+        FROM room_invites ri
+        JOIN rooms r ON r.id = ri.room_id
+        WHERE ri.invited_user_id = $1
+        ORDER BY ri.created_at ASC
+        """,
+        session.user_id
+    )
+    if not rows:
+        return
+
+    for row in rows:
+        frame = {
+            "type": "ROOM_INVITE",
+            "msg_id": str(uuid.uuid4()),
+            "ts": int(time.time() * 1000),
+            "token": None,
+            "payload": {
+                "room_id": row["room_id"],
+                "room_name": row["room_name"],
+                "is_private": row["is_private"],
+                "invited_by": row["invited_by"],
+                "queued": True,
+            }
+        }
+        await router._write(session.writer, frame)
+
+    await db_pool.execute(
+        "DELETE FROM room_invites WHERE invited_user_id = $1",
+        session.user_id
+    )

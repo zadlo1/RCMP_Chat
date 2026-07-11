@@ -16,12 +16,15 @@ from server.handlers.login import handle_login
 from server.handlers.register import handle_register
 from server.handlers.keepalive import handle_ping, handle_pong
 from server.handlers.bye import handle_bye
-from server.handlers.messaging import handle_send_message, handle_message_ack
+from server.handlers.messaging import handle_send_message, handle_message_ack, deliver_pending_direct_messages
 from server.handlers.rooms import (
     handle_join_room, handle_leave_room,
     handle_room_members, handle_room_kick, handle_room_ban, handle_room_unban,
 )
-from server.handlers.invite import handle_room_invite_accept, handle_room_invite_decline, send_invite
+from server.handlers.invite import (
+    handle_room_invite_accept, handle_room_invite_decline, send_invite,
+    deliver_pending_room_invites,
+)
 from server.handlers.admin import (
     handle_create_room, handle_delete_room,
     handle_admin_users_request, handle_delete_user, handle_set_user_role,
@@ -306,6 +309,9 @@ class RCMPServer:
                 asyncio.create_task(notify_friends_status(
                     session.user_id, session.username, "online", self.router, self.db_pool
                 ))
+                # Zaległe DM i zaproszenia do pokojów z czasu gdy użytkownik był offline
+                asyncio.create_task(deliver_pending_direct_messages(session, self.router, self.db_pool))
+                asyncio.create_task(deliver_pending_room_invites(session, self.router, self.db_pool))
 
         elif msg_type == MessageType.JOIN_ROOM:
             await handle_join_room(data, session, self.router, self.room_manager)

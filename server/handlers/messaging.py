@@ -145,8 +145,9 @@ async def _route_to_room(data, session, router, room_manager, db_pool,
 
 async def _route_to_user(data, session, router, db_pool,
                           target_user_id, seq_id, body, msg_id):
-    # Sprawdź czy odbiorca istnieje i jest online
-    if not router.is_online(target_user_id):
+    # Sprawdź czy odbiorca istnieje w ogóle (nie tylko czy jest online)
+    target_row = await db_pool.fetchrow("SELECT id FROM users WHERE id = $1", target_user_id)
+    if target_row is None:
         await router.send_error(session.writer, ErrorCode.USER_NOT_FOUND,
                                 ErrorCode.get_message(ErrorCode.USER_NOT_FOUND), msg_id)
         return
@@ -166,16 +167,68 @@ async def _route_to_user(data, session, router, db_pool,
             "original_msg_id": msg_id,
         }
     }
-    await router.send_to_user(target_user_id, deliver)
+    # Jeśli odbiorca jest offline, wiadomość zostaje w bazie jako niedostarczona
+    # i zostanie wypchnięta przy jego najbliższym LOGIN_OK (deliver_pending_direct_messages).
+    delivered = await router.send_to_user(target_user_id, deliver)
 
-    # Zapis do bazy
     await db_pool.execute(
         """
-        INSERT INTO messages (msg_id, seq_id, sender_id, recipient_id, body, hmac)
-        VALUES ($1::uuid, $2, $3, $4, $5, $6)
+        INSERT INTO messages (msg_id, seq_id, sender_id, recipient_id, body, hmac, delivered)
+        VALUES ($1::uuid, $2, $3, $4, $5, $6, $7)
         ON CONFLICT (msg_id) DO NOTHING
         """,
-        msg_id, seq_id, session.user_id, target_user_id, body, ""
+        msg_id, seq_id, session.user_id, target_user_id, body, "", delivered
+    )
+
+
+async def deliver_pending_direct_messages(
+    session: Session,
+    router: MessageRouter,
+    db_pool: asyncpg.Pool,
+):
+    """
+    Wysyła DM-y które przyszły podczas gdy użytkownik był offline.
+    Wywoływane po LOGIN_OK, analogicznie do send_friends_list_on_login.
+    Kolejność dostarczania = kolejność wysłania (sent_at ASC), żeby zachować
+    porządek konwersacji.
+    """
+    rows = await db_pool.fetch(
+        """
+        SELECT m.msg_id, m.seq_id, m.body, m.sent_at, u.id AS from_user_id, u.username AS from_user
+        FROM messages m
+        JOIN users u ON u.id = m.sender_id
+        WHERE m.recipient_id = $1 AND m.delivered = FALSE
+        ORDER BY m.sent_at ASC
+        """,
+        session.user_id
+    )
+    if not rows:
+        return
+
+    for row in rows:
+        deliver = {
+            "type": "DELIVER_MESSAGE",
+            "msg_id": str(uuid.uuid4()),
+            "ts": int(time.time() * 1000),
+            "token": None,
+            "payload": {
+                "from_user": row["from_user"],
+                "from_user_id": row["from_user_id"],
+                "target_type": "user",
+                "target_id": session.user_id,
+                "seq_id": row["seq_id"],
+                "body": row["body"],
+                "original_msg_id": str(row["msg_id"]),
+                "queued": True,
+            }
+        }
+        await router._write(session.writer, deliver)
+
+    # Oznacz jako dostarczone dopiero po wysłaniu wszystkich — jeśli writer padnie
+    # w połowie, reszta zostanie ponowiona przy kolejnym logowaniu.
+    await db_pool.execute(
+        "UPDATE messages SET delivered = TRUE WHERE recipient_id = $1 AND delivered = FALSE",
+        session.user_id
     )
 
 
@@ -233,8 +286,14 @@ async def _route_invite(data, session, router, db_pool, payload):
     }
     sent = await router.send_to_user(target_user_id, invite_frame)
     if not sent:
-        await router.send_error(session.writer, ErrorCode.USER_NOT_FOUND,
-                                f"User '{invite_to}' is offline", data.get("msg_id"))
+        # Offline -> zaproszenie zakolejkowane, dostarczone przy najbliższym LOGIN_OK
+        await db_pool.execute(
+            """
+            INSERT INTO room_invites (room_id, invited_user_id, invited_by)
+            VALUES ($1, $2, $3)
+            """,
+            room_id, target_user_id, session.username
+        )
 
 async def _route_dm_by_username(data, session, router, db_pool, payload, msg_id):
     """Wysyła wiadomość prywatną po nazwie użytkownika."""
@@ -250,11 +309,7 @@ async def _route_dm_by_username(data, session, router, db_pool, payload, msg_id)
         return
 
     target_user_id = row["id"]
-
-    if not router.is_online(target_user_id):
-        await router.send_error(session.writer, ErrorCode.USER_NOT_FOUND,
-                                f"User '{target_username}' is offline", msg_id)
-        return
+    seq_id = payload.get("seq_id", 0)
 
     deliver = {
         "type": "DELIVER_MESSAGE",
@@ -270,4 +325,14 @@ async def _route_dm_by_username(data, session, router, db_pool, payload, msg_id)
             "original_msg_id": msg_id,
         }
     }
-    await router.send_to_user(target_user_id, deliver)
+    # Offline odbiorca -> wiadomość trafia do kolejki (delivered=False), zamiast błędu.
+    delivered = await router.send_to_user(target_user_id, deliver)
+
+    await db_pool.execute(
+        """
+        INSERT INTO messages (msg_id, seq_id, sender_id, recipient_id, body, hmac, delivered)
+        VALUES ($1::uuid, $2, $3, $4, $5, $6, $7)
+        ON CONFLICT (msg_id) DO NOTHING
+        """,
+        msg_id, seq_id, session.user_id, target_user_id, body, "", delivered
+    )

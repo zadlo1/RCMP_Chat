@@ -73,7 +73,19 @@ CREATE TABLE IF NOT EXISTS messages (
     recipient_id INTEGER REFERENCES users(id),        -- NULL jeśli wiadomość do pokoju
     body        TEXT NOT NULL,
     hmac        VARCHAR(64) NOT NULL,
-    sent_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    sent_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    delivered   BOOLEAN NOT NULL DEFAULT TRUE  -- FALSE dla DM wysłanych do offline odbiorcy
+);
+
+-- ============================================================
+-- Zaproszenia do pokojów oczekujące na dostarczenie offline użytkownikowi
+-- ============================================================
+CREATE TABLE IF NOT EXISTS room_invites (
+    id              SERIAL PRIMARY KEY,
+    room_id         INTEGER NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+    invited_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    invited_by      VARCHAR(64) NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- ============================================================
@@ -106,6 +118,8 @@ CREATE INDEX IF NOT EXISTS idx_nonces_used_at   ON used_nonces(used_at);
 CREATE INDEX IF NOT EXISTS idx_logs_event       ON system_logs(event, logged_at);
 CREATE INDEX IF NOT EXISTS idx_room_bans_room   ON room_bans(room_id);
 CREATE INDEX IF NOT EXISTS idx_room_kicks_room  ON room_kicks(room_id);
+CREATE INDEX IF NOT EXISTS idx_messages_undelivered ON messages(recipient_id) WHERE delivered = FALSE;
+CREATE INDEX IF NOT EXISTS idx_room_invites_user ON room_invites(invited_user_id);
 
 -- ============================================================
 -- Domyślne pokoje publiczne
