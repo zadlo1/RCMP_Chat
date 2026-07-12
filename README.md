@@ -71,7 +71,7 @@ Etap 1 definiował rdzeń protokołu RCMP. Podczas implementacji protokół zost
 | ➕ `DELETE_USER` / `DELETE_USER_OK` / `SET_USER_ROLE` / `SET_USER_ROLE_OK` | Zarządzanie kontami użytkowników przez admina |
 | ➕ `ACCOUNT_DELETED` / `ROLE_CHANGED` | Powiadomienia push do klienta o zmianach administracyjnych |
 | ➕ Nowe kody błędów | `4033 SELF_ACTION_FORBIDDEN`, `4043 ROOM_BANNED`, `4044 LAST_ADMIN`, `4091 USERNAME_TAKEN`, `4092 USERNAME_INVALID`, `4093 INVALID_ROLE` |
-| ➕ `HISTORY_REQUEST` / `HISTORY_RESPONSE` | Planowane w Etapie 1 jako rozszerzenie — **zaimplementowane**; klient pobiera z bazy trwałą historię wiadomości pokoju (przy pierwszym dołączeniu do pokoju w danej sesji) oraz historię DM (przy pierwszym otwarciu okna rozmowy), dzięki czemu wiadomości są widoczne w GUI również po ponownym zalogowaniu |
+| ➕ `HISTORY_REQUEST` / `HISTORY_RESPONSE` | Planowane w Etapie 1 jako rozszerzenie — **zaimplementowane**; klient pobiera z bazy trwałą historię wiadomości pokoju (przy pierwszym dołączeniu do pokoju w danej sesji) oraz historię DM (przy pierwszym otwarciu okna rozmowy), dzięki czemu wiadomości są widoczne w GUI również po ponownym zalogowaniu. Dodatkowo obsługiwana jest paginacja kursorem `before_ts` — przycisk „Załaduj starsze wiadomości” doładowuje kolejne strony historii ponad domyślny limit `HISTORY_MAX_LIMIT` |
 
 ### Co się zmieniło względem Etapu 2 (projekt aplikacji)
 
@@ -151,8 +151,8 @@ Każda wiadomość to pojedyncza linia JSON zakończona znakiem `\n`. Wybór JSO
 | `REGISTER_OK` | S → C | potwierdzenie rejestracji |
 | `REGISTER_ERR` | S → C | błąd rejestracji |
 | `ROOMS_LIST` | S → C | lista dostępnych pokojów |
-| `HISTORY_REQUEST` | C → S | żądanie trwałej historii wiadomości pokoju lub DM zapisanej w bazie |
-| `HISTORY_RESPONSE` | S → C | odpowiedź z historią wiadomości (posortowaną chronologicznie) |
+| `HISTORY_REQUEST` | C → S | żądanie trwałej historii wiadomości pokoju lub DM zapisanej w bazie, z opcjonalną paginacją (`before_ts`) |
+| `HISTORY_RESPONSE` | S → C | odpowiedź z historią wiadomości (posortowaną chronologicznie), wraz z flagą `has_more` |
 | `ROOM_INVITE` | S → C | zaproszenie do pokoju prywatnego |
 | `ROOM_INVITE_ACCEPT` | C → S | akceptacja zaproszenia |
 | `ROOM_INVITE_DECLINE` | C → S | odrzucenie zaproszenia |
@@ -248,7 +248,7 @@ Jeśli klient nie otrzyma `MESSAGE_ACK` w ciągu 5 s, ponawia `SEND_MESSAGE` z t
 3. Serwer weryfikuje dane względem bcrypt hash w bazie, sprawdza nonce.
 4. Serwer odsyła `LOGIN_OK` z tokenem JWT i `hmac_secret`.
 5. Serwer wysyła `FRIENDS_LIST` oraz `ROOMS_LIST` po zalogowaniu, a następnie dostarcza zaległe DM-y i `ROOM_INVITE` zebrane podczas gdy użytkownik był offline (ramki oznaczone `queued: true` w payloadzie).
-6. Klient może dołączać do pokojów oraz wysyłać wiadomości. Przy pierwszym w danej sesji wejściu do pokoju oraz przy pierwszym otwarciu okna DM z danym rozmówcą klient wysyła `HISTORY_REQUEST` i otrzymuje `HISTORY_RESPONSE` z trwałą historią wiadomości pobraną z tabeli `messages` — dzięki temu cała dotychczasowa rozmowa jest widoczna w GUI od razu, także po ponownym zalogowaniu.
+6. Klient może dołączać do pokojów oraz wysyłać wiadomości. Przy pierwszym w danej sesji wejściu do pokoju oraz przy pierwszym otwarciu okna DM z danym rozmówcą klient wysyła `HISTORY_REQUEST` i otrzymuje `HISTORY_RESPONSE` z trwałą historią wiadomości pobraną z tabeli `messages` — dzięki temu cała dotychczasowa rozmowa jest widoczna w GUI od razu, także po ponownym zalogowaniu. Jeśli serwer zasygnalizuje flagą `has_more`, że w bazie są jeszcze starsze wiadomości niż te zwrócone w pierwszej stronie, w GUI pojawia się przycisk „Załaduj starsze wiadomości” — jego kliknięcie wysyła kolejny `HISTORY_REQUEST` z kursorem `before_ts` ustawionym na `ts` najstarszej aktualnie posiadanej wiadomości.
 7. Serwer przekazuje wiadomości odbiorcom przez `DELIVER_MESSAGE`.
 8. Odbiorcy potwierdzają odbiór przez `MESSAGE_ACK`.
 9. Po zakończeniu sesji klient wysyła `BYE`, serwer odpowiada `BYE_ACK`.
@@ -333,7 +333,7 @@ LOG_LEVEL=WARNING python -m server.main  # tylko ostrzeżenia i błędy
 | `sent_at` | TIMESTAMPTZ | czas wysłania |
 | `delivered` | BOOLEAN | `FALSE` dla DM wysłanej do offline odbiorcy — dostarczana przy jego najbliższym `LOGIN_OK`. Wiadomości do pokoju zawsze `TRUE` (broadcast, bez kolejkowania) |
 
-Tabela `messages` jest jedynym trwałym źródłem historii wiadomości — obsługuje zarówno kolejkowanie DM do offline odbiorców, jak i `HISTORY_REQUEST`/`HISTORY_RESPONSE` (pełna historia pokoju lub konwersacji DM, posortowana po `sent_at`, zwracana klientowi niezależnie od statusu `delivered`).
+Tabela `messages` jest jedynym trwałym źródłem historii wiadomości — obsługuje zarówno kolejkowanie DM do offline odbiorców, jak i `HISTORY_REQUEST`/`HISTORY_RESPONSE` (pełna historia pokoju lub konwersacji DM, posortowana po `sent_at`, zwracana klientowi niezależnie od statusu `delivered`). Kolumna `sent_at` pełni też rolę kursora paginacji: żądanie kolejnej strony filtruje po `sent_at < before_ts`, a odpowiedź informuje flagą `has_more`, czy w bazie pozostały jeszcze starsze wiadomości do doładowania.
 
 ### Tabela `friendships` *(nowa względem Etapu 2)*
 
@@ -655,6 +655,8 @@ Użytkownik wysyła `FRIEND_REQUEST` do innego użytkownika online. Odbiorca wid
 
 Przy pierwszym w danej sesji wejściu do pokoju klient wysyła `HISTORY_REQUEST` z `history_type=room` i `room_id`. Serwer sprawdza, czy użytkownik jest członkiem pokoju lub ma do niego dostęp (ACL/publiczny/bez wyrzucenia), po czym odpytuje tabelę `messages` i zwraca `HISTORY_RESPONSE` z wiadomościami posortowanymi chronologicznie (domyślnie ostatnie 100, maksymalnie 200). Analogicznie, przy pierwszym otwarciu okna DM z danym użytkownikiem klient wysyła `HISTORY_REQUEST` z `history_type=dm` i `username` rozmówcy — serwer zwraca pełną historię konwersacji w obu kierunkach. Dzięki temu wszystkie wiadomości — zarówno kanałowe, jak i prywatne — są zapisywane na stałe w bazie i widoczne w GUI natychmiast po (ponownym) zalogowaniu, niezależnie od tego, czy użytkownik był online w chwili ich wysłania. Brak dostępu do pokoju kończy się `ERROR 4032 FORBIDDEN`, nieznany rozmówca DM — `ERROR 4042 USER_NOT_FOUND`.
 
+**Paginacja — infinite scroll.** Ponieważ pojedyncza odpowiedź zwraca maksymalnie `HISTORY_MAX_LIMIT` (200) wiadomości, dłuższe konwersacje wymagają doładowania kolejnych, starszych porcji historii. Klient przechowuje `ts` najstarszej aktualnie posiadanej wiadomości oraz flagę `has_more` zwróconą przez serwer w poprzedniej odpowiedzi. Jeśli `has_more=true` i użytkownik przewinie czat do góry (5% od początku), automatycznie wysyłany jest kolejny `HISTORY_REQUEST` z dodatkowym polem `before_ts` ustawionym na znacznik czasu najstarszej wiadomości. Serwer filtruje wtedy wiadomości warunkiem `sent_at < before_ts`, sprawdza dodatkowym zapytaniem, czy w bazie istnieją jeszcze starsze wiadomości, i zwraca kolejną stronę wraz z zaktualizowaną flagą `has_more` oraz odesłanym `before_ts` (po którym klient rozpoznaje, że to odpowiedź na doładowanie, a nie pierwsze pobranie historii). Pobrane w ten sposób wiadomości są doklejane na początku lokalnej historii, przed dotychczas wyświetlanymi wiadomościami. Mechanizm zapobiega wielokrotnemu ładowaniu tej samej strony.
+
 ---
 
 ## 11. Bezpieczeństwo
@@ -733,7 +735,7 @@ Klient wysyła `username + password + nonce`. Hasło nigdy nie jest eksponowane 
 
 ### Przegląd pokrycia
 
-Testy jednostkowe obejmują **195 przypadków testowych** w 9 plikach testowych.
+Testy jednostkowe obejmują **210 przypadków testowych** w 9 plikach testowych.
 
 | Plik | Moduł | Liczba testów |
 |---|---|---|
@@ -743,10 +745,10 @@ Testy jednostkowe obejmują **195 przypadków testowych** w 9 plikach testowych.
 | `test_room_manager.py` | `RoomManager` | 17 |
 | `test_admin.py` | handlery admin | 28 |
 | `test_offline_queue.py` | kolejkowanie DM i `ROOM_INVITE` offline | 11 |
-| `test_history.py` | `HISTORY_REQUEST`/`HISTORY_RESPONSE` — historia pokoju i DM | 10 |
+| `test_history.py` | `HISTORY_REQUEST`/`HISTORY_RESPONSE` — historia pokoju i DM, w tym paginacja `before_ts`/`has_more` | 21 |
 | `test_connection.py` | `RCMPConnection` | 27 |
 | `test_sender.py` | `RCMPSender` | 36 |
-| **Razem** | | **195** |
+| **Razem** | | **210** |
 
 Testy klienta (`test_connection.py`, `test_sender.py`) pokrywają całą logikę warstwy protokołu po stronie klienta bez GUI i bez rzeczywistego połączenia sieciowego.
 
@@ -1052,6 +1054,27 @@ Testy klienta (`test_connection.py`, `test_sender.py`) pokrywają całą logikę
 | `test_success_returns_both_directions_in_order` | wiadomości wysłane i odebrane od rozmówcy zwrócone razem, chronologicznie |
 | `test_limit_is_clamped_to_max` | żądany `limit` jest ograniczany do `Config.HISTORY_MAX_LIMIT` |
 
+**Paginacja historii pokoju — `TestRoomHistoryPagination` (8 testów)**
+
+| Test | Opis |
+|---|---|
+| `test_before_ts_passed_to_query` | `before_ts` z payloadu trafia do zapytania SQL jako `datetime` |
+| `test_no_before_ts_means_first_page` | brak `before_ts` → zapytanie bez filtra czasowego (pierwsza strona) |
+| `test_has_more_true_when_older_messages_exist` | istnienie starszych wiadomości w bazie → `has_more=true` |
+| `test_has_more_false_when_no_older_messages` | brak starszych wiadomości → `has_more=false` |
+| `test_has_more_false_when_no_messages_at_all` | pusty wynik → `has_more=false` bez dodatkowego zapytania do bazy |
+| `test_response_echoes_before_ts` | odpowiedź odsyła `before_ts` z żądania (rozróżnienie strony w kliencie) |
+| `test_first_page_echoes_before_ts_none` | pierwsza strona odsyła `before_ts=null` |
+| `test_invalid_before_ts_treated_as_first_page` | niepoprawny `before_ts` (np. tekst) nie wywołuje błędu — traktowany jak jego brak |
+
+**Paginacja historii DM — `TestDmHistoryPagination` (3 testy)**
+
+| Test | Opis |
+|---|---|
+| `test_before_ts_passed_to_query` | `before_ts` filtruje konwersację DM analogicznie jak w pokoju |
+| `test_has_more_true_when_older_messages_exist` | starsze wiadomości w konwersacji → `has_more=true` |
+| `test_response_echoes_before_ts` | odpowiedź DM odsyła `before_ts` z żądania |
+
 ### test_connection.py — RCMPConnection (27 testów)
 
 | Klasa | Testowane scenariusze |
@@ -1106,6 +1129,5 @@ pytest tests/ --cov=server --cov=client --cov=shared --cov-report=term-missing
 - **`BLOCK_USER`/`UNBLOCK_USER`** jako dedykowane typy wiadomości nie zostały zaimplementowane — flaga `is_blocked` istnieje w schemacie bazy i jest sprawdzana przy logowaniu, ale admin nie może jej zmienić przez protokół (tylko przez bezpośrednią edycję bazy).
 - **Certyfikaty TLS** są self-signed — w środowisku produkcyjnym należy użyć certyfikatu od zaufanego CA. Po stronie klienta ustawione jest `check_hostname=False`, co jest kompromisem dla certyfikatów self-signed; produkcyjnie należy włączyć weryfikację hostname.
 - **Testy integracyjne end-to-end** nie zostały zaimplementowane — brak testu łączącego rzeczywistego klienta z rzeczywistym serwerem bez mocków.
-- **Historia wiadomości** pobierana jest z serwera tylko raz na sesję dla danego pokoju/rozmówcy (przy pierwszym wejściu/otwarciu) — nie ma jeszcze paginacji "załaduj starsze wiadomości" dla bardzo długich konwersacji przekraczających limit `HISTORY_MAX_LIMIT` (200 wiadomości).
 
 ---

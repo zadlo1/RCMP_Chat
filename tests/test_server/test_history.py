@@ -47,10 +47,11 @@ def make_room_manager(room=None, is_member=False, has_access=True):
     return rm
 
 
-def make_db(fetch_result=None, fetchrow_result=None):
+def make_db(fetch_result=None, fetchrow_result=None, fetchval_result=False):
     db = AsyncMock()
     db.fetch = AsyncMock(return_value=fetch_result or [])
     db.fetchrow = AsyncMock(return_value=fetchrow_result)
+    db.fetchval = AsyncMock(return_value=fetchval_result)
     return db
 
 
@@ -244,3 +245,194 @@ class TestDmHistory:
         from server.config import Config
         called_limit = db.fetch.call_args[0][-1]
         assert called_limit <= Config.HISTORY_MAX_LIMIT
+
+
+# ---------------------------------------------------------------------------
+# Paginacja ("Załaduj starsze wiadomości")
+# ---------------------------------------------------------------------------
+
+class TestRoomHistoryPagination:
+    @pytest.mark.asyncio
+    async def test_before_ts_passed_to_query(self):
+        """`before_ts` z payloadu jest konwertowany na datetime i przekazywany do zapytania."""
+        session = make_session(user_id=1, username="alice")
+        router = make_router()
+        room_manager = make_room_manager(
+            room={"id": 1, "name": "general", "is_private": False},
+            is_member=True, has_access=True,
+        )
+        db = make_db(fetch_result=[])
+        before_ts_ms = int(time.time() * 1000)
+
+        await handle_history_request(
+            envelope("room", room_id=1, before_ts=before_ts_ms), session, router, room_manager, db
+        )
+
+        args = db.fetch.call_args[0]  # (query, room_id, before_dt, limit)
+        before_dt_arg = args[2]
+        assert before_dt_arg is not None
+        assert abs(before_dt_arg.timestamp() * 1000 - before_ts_ms) < 1000
+
+    @pytest.mark.asyncio
+    async def test_no_before_ts_means_first_page(self):
+        """Brak `before_ts` w żądaniu → pierwsza strona, filtr czasowy jest None."""
+        session = make_session(user_id=1, username="alice")
+        router = make_router()
+        room_manager = make_room_manager(
+            room={"id": 1, "name": "general", "is_private": False},
+            is_member=True, has_access=True,
+        )
+        db = make_db(fetch_result=[])
+
+        await handle_history_request(envelope("room", room_id=1), session, router, room_manager, db)
+
+        before_dt_arg = db.fetch.call_args[0][2]
+        assert before_dt_arg is None
+
+    @pytest.mark.asyncio
+    async def test_has_more_true_when_older_messages_exist(self):
+        session = make_session(user_id=1, username="alice")
+        router = make_router()
+        room_manager = make_room_manager(
+            room={"id": 1, "name": "general", "is_private": False},
+            is_member=True, has_access=True,
+        )
+        rows = [make_row("m1", 1, "alice", "najnowsza")]
+        db = make_db(fetch_result=rows, fetchval_result=True)
+
+        await handle_history_request(envelope("room", room_id=1), session, router, room_manager, db)
+
+        frame = router._write.call_args[0][1]
+        assert frame["payload"]["has_more"] is True
+
+    @pytest.mark.asyncio
+    async def test_has_more_false_when_no_older_messages(self):
+        session = make_session(user_id=1, username="alice")
+        router = make_router()
+        room_manager = make_room_manager(
+            room={"id": 1, "name": "general", "is_private": False},
+            is_member=True, has_access=True,
+        )
+        rows = [make_row("m1", 1, "alice", "jedyna")]
+        db = make_db(fetch_result=rows, fetchval_result=False)
+
+        await handle_history_request(envelope("room", room_id=1), session, router, room_manager, db)
+
+        frame = router._write.call_args[0][1]
+        assert frame["payload"]["has_more"] is False
+
+    @pytest.mark.asyncio
+    async def test_has_more_false_when_no_messages_at_all(self):
+        """Brak wiadomości → has_more zawsze False, bez dodatkowego zapytania fetchval."""
+        session = make_session(user_id=1, username="alice")
+        router = make_router()
+        room_manager = make_room_manager(
+            room={"id": 1, "name": "general", "is_private": False},
+            is_member=True, has_access=True,
+        )
+        db = make_db(fetch_result=[])
+
+        await handle_history_request(envelope("room", room_id=1), session, router, room_manager, db)
+
+        frame = router._write.call_args[0][1]
+        assert frame["payload"]["has_more"] is False
+        db.fetchval.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_response_echoes_before_ts(self):
+        """Odpowiedź zawiera `before_ts` z żądania — klient używa tego do rozróżnienia
+        pierwszego pobrania historii od doładowania kolejnej (starszej) strony."""
+        session = make_session(user_id=1, username="alice")
+        router = make_router()
+        room_manager = make_room_manager(
+            room={"id": 1, "name": "general", "is_private": False},
+            is_member=True, has_access=True,
+        )
+        db = make_db(fetch_result=[])
+        before_ts_ms = int(time.time() * 1000)
+
+        await handle_history_request(
+            envelope("room", room_id=1, before_ts=before_ts_ms), session, router, room_manager, db
+        )
+
+        frame = router._write.call_args[0][1]
+        assert frame["payload"]["before_ts"] == before_ts_ms
+
+    @pytest.mark.asyncio
+    async def test_first_page_echoes_before_ts_none(self):
+        session = make_session(user_id=1, username="alice")
+        router = make_router()
+        room_manager = make_room_manager(
+            room={"id": 1, "name": "general", "is_private": False},
+            is_member=True, has_access=True,
+        )
+        db = make_db(fetch_result=[])
+
+        await handle_history_request(envelope("room", room_id=1), session, router, room_manager, db)
+
+        frame = router._write.call_args[0][1]
+        assert frame["payload"]["before_ts"] is None
+
+    @pytest.mark.asyncio
+    async def test_invalid_before_ts_treated_as_first_page(self):
+        """Niepoprawny `before_ts` (np. string) nie wywala serwera — traktowany jak brak kursora."""
+        session = make_session(user_id=1, username="alice")
+        router = make_router()
+        room_manager = make_room_manager(
+            room={"id": 1, "name": "general", "is_private": False},
+            is_member=True, has_access=True,
+        )
+        db = make_db(fetch_result=[])
+
+        await handle_history_request(
+            envelope("room", room_id=1, before_ts="not-a-timestamp"), session, router, room_manager, db
+        )
+
+        router.send_error.assert_not_awaited()
+        before_dt_arg = db.fetch.call_args[0][2]
+        assert before_dt_arg is None
+
+
+class TestDmHistoryPagination:
+    @pytest.mark.asyncio
+    async def test_before_ts_passed_to_query(self):
+        session = make_session(user_id=1, username="alice")
+        router = make_router()
+        room_manager = make_room_manager()
+        db = make_db(fetch_result=[], fetchrow_result={"id": 2})
+        before_ts_ms = int(time.time() * 1000)
+
+        await handle_history_request(
+            envelope("dm", username="bob", before_ts=before_ts_ms), session, router, room_manager, db
+        )
+
+        before_dt_arg = db.fetch.call_args[0][2]  # (query, user_id, target_id, before_dt, limit)
+        assert before_dt_arg is not None
+
+    @pytest.mark.asyncio
+    async def test_has_more_true_when_older_messages_exist(self):
+        session = make_session(user_id=1, username="alice")
+        router = make_router()
+        room_manager = make_room_manager()
+        rows = [make_row("m1", 1, "alice", "cześć")]
+        db = make_db(fetch_result=rows, fetchrow_result={"id": 2}, fetchval_result=True)
+
+        await handle_history_request(envelope("dm", username="bob"), session, router, room_manager, db)
+
+        frame = router._write.call_args[0][1]
+        assert frame["payload"]["has_more"] is True
+
+    @pytest.mark.asyncio
+    async def test_response_echoes_before_ts(self):
+        session = make_session(user_id=1, username="alice")
+        router = make_router()
+        room_manager = make_room_manager()
+        db = make_db(fetch_result=[], fetchrow_result={"id": 2})
+        before_ts_ms = int(time.time() * 1000)
+
+        await handle_history_request(
+            envelope("dm", username="bob", before_ts=before_ts_ms), session, router, room_manager, db
+        )
+
+        frame = router._write.call_args[0][1]
+        assert frame["payload"]["before_ts"] == before_ts_ms

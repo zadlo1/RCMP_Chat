@@ -11,7 +11,8 @@ class ChatWindow(ctk.CTkFrame):
     def __init__(self, parent, username: str, on_send, on_join_room,
                  on_leave_room, on_add_friend=None, on_open_dm=None,
                  on_remove_friend=None, is_admin=False, on_create_room=None,
-                 on_view_members=None, on_admin_panel=None, **kwargs):
+                 on_view_members=None, on_admin_panel=None, on_load_older_history=None,
+                 **kwargs):
         super().__init__(parent, corner_radius=0, **kwargs)
 
         self.username = username
@@ -25,6 +26,9 @@ class ChatWindow(ctk.CTkFrame):
         self.on_create_room = on_create_room
         self.on_view_members = on_view_members
         self.on_admin_panel = on_admin_panel
+        # Callback(room_id, before_ts) wywoływany po kliknięciu "Załaduj starsze
+        # wiadomości" — pozwala pobrać kolejną, starszą porcję historii pokoju.
+        self.on_load_older_history = on_load_older_history
         self._friend_items: dict[str, object] = {}
 
         self._current_room_id = None
@@ -33,6 +37,11 @@ class ChatWindow(ctk.CTkFrame):
 
         # Historia wiadomości per pokój: {room_id: [(username, body, ts, own)]}
         self._room_histories: dict[int, list] = {}
+        # Paginacja historii per pokój: czy serwer sygnalizował starsze wiadomości
+        # oraz najstarszy `ts` aktualnie posiadanej wiadomości (kursor dla kolejnej strony)
+        self._room_has_more: dict[int, bool] = {}
+        self._room_oldest_ts: dict[int, int | None] = {}
+        self._room_loading_older: set[int] = set()
 
         self._build_ui()
 
@@ -182,6 +191,10 @@ class ChatWindow(ctk.CTkFrame):
         self._messages_frame = ctk.CTkScrollableFrame(
             self._content_frame, fg_color="transparent")
 
+        # Infinite scroll — nasłuchujemy przewijania
+        self._messages_frame._parent_canvas.bind("<Configure>", self._on_scroll_configure)
+        self._last_scroll_position = 0.0
+
         # Pole wpisywania
         input_frame = ctk.CTkFrame(self._chat_area, height=54, corner_radius=0)
         input_frame.pack(fill="x", side="bottom")
@@ -229,6 +242,9 @@ class ChatWindow(ctk.CTkFrame):
         if item:
             item.destroy()
         self._room_histories.pop(room_id, None)
+        self._room_has_more.pop(room_id, None)
+        self._room_oldest_ts.pop(room_id, None)
+        self._room_loading_older.discard(room_id)
 
     def _join_room(self, room_id: int):
         if room_id == self._current_room_id:
@@ -340,12 +356,18 @@ class ChatWindow(ctk.CTkFrame):
             self._render_bubble(username, body, ts, own)
             self._scroll_to_bottom()
 
-    def load_room_history(self, room_id: int, messages: list, my_username: str = None):
+    def load_room_history(self, room_id: int, messages: list, my_username: str = None,
+                          has_more: bool = False, append_older: bool = False):
         """
         Wstawia trwałą historię wiadomości pobraną z serwera (HISTORY_RESPONSE)
         na początek lokalnej historii danego pokoju — przed wiadomościami/zdarzeniami
         dodanymi już w bieżącej sesji (np. komunikat "Dołączyłeś do #pokój").
         Dzięki temu historia jest widoczna w GUI również po ponownym zalogowaniu.
+
+        `has_more` — czy serwer sygnalizuje istnienie jeszcze starszych wiadomości
+        (pokazuje/ukrywa przycisk "Załaduj starsze wiadomości").
+        `append_older` — True, gdy to odpowiedź na doładowanie starszej strony
+        (paginacja), a nie pierwsze pobranie historii pokoju w danej sesji.
         """
         my_username = my_username or self.username
         entries = [
@@ -361,9 +383,46 @@ class ChatWindow(ctk.CTkFrame):
 
         existing = self._room_histories.get(room_id, [])
         self._room_histories[room_id] = entries + existing
+        self._room_has_more[room_id] = has_more
+        self._room_loading_older.discard(room_id)
+
+        if entries:
+            oldest_ts = entries[0]["ts"]
+            current_oldest = self._room_oldest_ts.get(room_id)
+            if current_oldest is None or (oldest_ts is not None and oldest_ts < current_oldest):
+                self._room_oldest_ts[room_id] = oldest_ts
+        elif not append_older:
+            self._room_oldest_ts.setdefault(room_id, None)
 
         if room_id == self._current_room_id:
             self._reload_messages()
+
+    def _request_older_history(self, room_id: int):
+        """Żądanie pobrania starszych wiadomości."""
+        if room_id in self._room_loading_older:
+            return
+        if not self._room_has_more.get(room_id, False):
+            return
+        self._room_loading_older.add(room_id)
+        if self.on_load_older_history:
+            self.on_load_older_history(room_id, self._room_oldest_ts.get(room_id))
+
+    def _on_scroll_configure(self, event):
+        """Wykrywa przewinięcie do góry i automatycznie ładuje starsze wiadomości."""
+        if self._current_room_id is None:
+            return
+
+        canvas = self._messages_frame._parent_canvas
+        # Pobierz aktualną pozycję przewijania (0.0 = góra, 1.0 = dół)
+        scroll_pos = canvas.yview()[0]
+
+        # Jeśli użytkownik przewinął blisko góry (5% od góry) i ma więcej wiadomości
+        if scroll_pos < 0.05 and self._room_has_more.get(self._current_room_id, False):
+            # Sprawdź czy nie ładujemy już
+            if self._current_room_id not in self._room_loading_older:
+                self._request_older_history(self._current_room_id)
+
+        self._last_scroll_position = scroll_pos
 
     def add_system_message(self, text: str, room_id: int = None):
         target = room_id or self._current_room_id

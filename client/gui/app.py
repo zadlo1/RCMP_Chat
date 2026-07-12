@@ -346,27 +346,50 @@ class RCMPApp(ctk.CTk):
         payload = data.get("payload", {})
         history_type = payload.get("history_type")
         messages = payload.get("messages", [])
+        has_more = payload.get("has_more", False)
+        # `before_ts` jest odsyłany przez serwer tylko wtedy, gdy żądanie było
+        # doładowaniem kolejnej (starszej) strony historii — pozwala to odróżnić
+        # pierwsze pobranie historii od paginacji "załaduj starsze wiadomości".
+        is_older_page = payload.get("before_ts") is not None
 
-        logger.info("HISTORY_RESPONSE: type=%s, messages=%d", history_type, len(messages))
+        logger.info("HISTORY_RESPONSE: type=%s, messages=%d, has_more=%s, older_page=%s",
+                    history_type, len(messages), has_more, is_older_page)
 
         if history_type == "room":
             room_id = payload.get("room_id")
             logger.debug("Loading %d messages for room %s", len(messages), room_id)
 
-            def apply_room(_app=self, rid=room_id, msgs=messages):
+            def apply_room(_app=self, rid=room_id, msgs=messages, hm=has_more, older=is_older_page):
                 if _app._chat:
-                    _app._chat.load_room_history(rid, msgs, _app._username)
+                    _app._chat.load_room_history(rid, msgs, _app._username,
+                                                  has_more=hm, append_older=older)
 
             self.after(0, lambda: apply_room())
         elif history_type == "dm":
             username = payload.get("username")
 
-            def apply_dm(_app=self, u=username, msgs=messages):
+            def apply_dm(_app=self, u=username, msgs=messages, hm=has_more, older=is_older_page):
                 dm = _app._dm_windows.get(u)
                 if dm:
-                    dm.load_history(msgs, _app._username)
+                    dm.load_history(msgs, _app._username, has_more=hm, append_older=older)
 
             self.after(0, lambda: apply_dm())
+
+    def _load_older_room_history(self, room_id: int, before_ts: int | None):
+        """Wywoływane po kliknięciu "Załaduj starsze wiadomości" w oknie pokoju."""
+        if before_ts is None:
+            return
+        logger.debug("Wysyłanie HISTORY_REQUEST (starsza strona) dla pokoju %s przed ts=%s",
+                     room_id, before_ts)
+        self._run_async(self.sender.send_room_history_request(room_id, before_ts=before_ts))
+
+    def _load_older_dm_history(self, username: str, before_ts: int | None):
+        """Wywoływane po kliknięciu "Załaduj starsze wiadomości" w oknie DM."""
+        if before_ts is None:
+            return
+        logger.debug("Wysyłanie HISTORY_REQUEST (starsza strona) dla DM z %s przed ts=%s",
+                     username, before_ts)
+        self._run_async(self.sender.send_dm_history_request(username, before_ts=before_ts))
 
     def _remove_room_from_sidebar(self, room_id: int):
         """Usuwa pokój z paska po lewej (np. po banie/wyrzuceniu — utrata dostępu)."""
@@ -562,6 +585,7 @@ class RCMPApp(ctk.CTk):
             on_create_room=self._show_create_room_dialog,
             on_view_members=self._view_members,
             on_admin_panel=self._show_admin_panel,
+            on_load_older_history=self._load_older_room_history,
         )
         self._chat.pack(fill="both", expand=True)
         self._chat.set_tls_version(self._tls_version)
@@ -977,6 +1001,7 @@ class RCMPApp(ctk.CTk):
             my_username=self._username,
             friend_username=username,
             on_send=lambda body: self._send_dm(username, body),
+            on_load_older_history=self._load_older_dm_history,
         )
         self._dm_windows[username] = win
 
@@ -1444,11 +1469,18 @@ class AddFriendDialog(ctk.CTkToplevel):
 class DMWindow(ctk.CTkToplevel):
     """Okno wiadomości prywatnych (Direct Message)."""
 
-    def __init__(self, parent, my_username: str, friend_username: str, on_send):
+    def __init__(self, parent, my_username: str, friend_username: str, on_send,
+                 on_load_older_history=None):
         super().__init__(parent)
         self.my_username = my_username
         self.friend_username = friend_username
         self.on_send = on_send
+        # Callback(username, before_ts) — doładowanie starszej strony historii DM.
+        self.on_load_older_history = on_load_older_history
+        self._history: list = []
+        self._has_more = False
+        self._oldest_ts = None
+        self._loading_older = False
 
         self.title(f"DM — {friend_username}")
         self.geometry("480x520")
@@ -1495,12 +1527,45 @@ class DMWindow(ctk.CTkToplevel):
     def add_message(self, username: str, body: str, ts: int = None, own: bool = False):
         import time as t
         ts = ts or int(t.time() * 1000)
+        self._history.append({"username": username, "body": body, "ts": ts, "own": own})
+        self._render_bubble(username, body, ts, own)
+        self._messages.after(
+            50, lambda: self._messages._parent_canvas.yview_moveto(1.0))
+
+    def _render_bubble(self, username: str, body: str, ts: int, own: bool):
         from client.gui.widgets import MessageBubble
         bubble = MessageBubble(
             self._messages, username=username,
             body=body, ts=ts, own=own,
         )
         bubble.pack(fill="x", pady=1)
+
+    def _render_load_older_button(self):
+        ctk.CTkButton(
+            self._messages,
+            text="⏳ Ładowanie..." if self._loading_older else "⬆ Załaduj starsze wiadomości",
+            height=28,
+            font=ctk.CTkFont(size=12),
+            fg_color="#333333", hover_color="#444444",
+            state="disabled" if self._loading_older else "normal",
+            command=self._request_older_history,
+        ).pack(fill="x", padx=30, pady=(4, 8))
+
+    def _request_older_history(self):
+        if self._loading_older:
+            return
+        self._loading_older = True
+        self._reload_messages()
+        if self.on_load_older_history:
+            self.on_load_older_history(self.friend_username, self._oldest_ts)
+
+    def _reload_messages(self):
+        for widget in self._messages.winfo_children():
+            widget.destroy()
+        if self._has_more:
+            self._render_load_older_button()
+        for entry in self._history:
+            self._render_bubble(entry["username"], entry["body"], entry["ts"], entry["own"])
         self._messages.after(
             50, lambda: self._messages._parent_canvas.yview_moveto(1.0))
 
@@ -1509,20 +1574,38 @@ class DMWindow(ctk.CTkToplevel):
         self._status_label.configure(
             text=f"● {status}", text_color=color)
 
-    def load_history(self, messages: list, my_username: str = None):
+    def load_history(self, messages: list, my_username: str = None,
+                      has_more: bool = False, append_older: bool = False):
         """
         Wypełnia okno DM trwałą historią wiadomości pobraną z serwera
         (HISTORY_RESPONSE), w kolejności chronologicznej — dzięki temu
         rozmowa jest widoczna po ponownym otwarciu okna / zalogowaniu.
+
+        `has_more` — czy istnieją jeszcze starsze wiadomości niż zwrócone
+        (pokazuje/ukrywa przycisk "Załaduj starsze wiadomości").
+        `append_older` — True dla odpowiedzi na doładowanie starszej strony.
         """
         my_username = my_username or self.my_username
-        for m in messages:
-            self.add_message(
-                m.get("from_user", "?"),
-                m.get("body", ""),
-                m.get("ts"),
-                own=(m.get("from_user") == my_username),
-            )
+        entries = [
+            {
+                "username": m.get("from_user", "?"),
+                "body": m.get("body", ""),
+                "ts": m.get("ts"),
+                "own": m.get("from_user") == my_username,
+            }
+            for m in messages
+        ]
+
+        self._history = entries + self._history
+        self._has_more = has_more
+        self._loading_older = False
+
+        if entries:
+            oldest_ts = entries[0]["ts"]
+            if self._oldest_ts is None or (oldest_ts is not None and oldest_ts < self._oldest_ts):
+                self._oldest_ts = oldest_ts
+
+        self._reload_messages()
 
     def _send(self):
         body = self._input.get().strip()

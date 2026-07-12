@@ -64,17 +64,28 @@ class RCMPSender:
     async def send_room_members_request(self, room_id: int) -> str:
         return await self.send("ROOM_MEMBERS_REQUEST", {"room_id": room_id})
 
-    async def send_room_history_request(self, room_id: int, limit: int = 100) -> str:
-        """Żąda trwałej historii wiadomości pokoju zapisanej w bazie."""
-        return await self.send("HISTORY_REQUEST", {
-            "history_type": "room", "room_id": room_id, "limit": limit,
-        })
+    async def send_room_history_request(self, room_id: int, limit: int = 100,
+                                         before_ts: int | None = None) -> str:
+        """Żąda trwałej historii wiadomości pokoju zapisanej w bazie.
 
-    async def send_dm_history_request(self, username: str, limit: int = 100) -> str:
-        """Żąda trwałej historii wiadomości prywatnych (DM) z danym użytkownikiem."""
-        return await self.send("HISTORY_REQUEST", {
-            "history_type": "dm", "username": username, "limit": limit,
-        })
+        `before_ts` (opcjonalny, ms epoch) to kursor paginacji — gdy podany,
+        serwer zwraca kolejną porcję wiadomości starszych niż ten moment
+        (przycisk "Załaduj starsze wiadomości" w GUI)."""
+        payload = {"history_type": "room", "room_id": room_id, "limit": limit}
+        if before_ts is not None:
+            payload["before_ts"] = before_ts
+        return await self.send("HISTORY_REQUEST", payload)
+
+    async def send_dm_history_request(self, username: str, limit: int = 100,
+                                       before_ts: int | None = None) -> str:
+        """Żąda trwałej historii wiadomości prywatnych (DM) z danym użytkownikiem.
+
+        `before_ts` (opcjonalny, ms epoch) to kursor paginacji — patrz
+        `send_room_history_request`."""
+        payload = {"history_type": "dm", "username": username, "limit": limit}
+        if before_ts is not None:
+            payload["before_ts"] = before_ts
+        return await self.send("HISTORY_REQUEST", payload)
 
     async def send_room_kick(self, room_id: int, user_id: int) -> str:
         return await self.send("ROOM_KICK", {"room_id": room_id, "user_id": user_id})
